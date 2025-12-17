@@ -1,0 +1,265 @@
+Version,25.1;
+
+Building,
+    TestBuilding,
+    0,
+    City,
+    0.04,
+    0.4,
+    FullExterior,
+    25,
+    6;
+
+Timestep,4;
+
+HeatBalanceAlgorithm,ConductionTransferFunction;
+
+SurfaceConvectionAlgorithm:Inside,TARP;
+
+SurfaceConvectionAlgorithm:Outside,DOE-2;
+
+SimulationControl,
+    No,
+    No,
+    No,
+    No,
+    Yes;
+
+RunPeriod,
+    Annual,
+    1,
+    1,
+    ,
+    12,
+    31,
+    ,
+    Sunday,
+    No,
+    No,
+    No,
+    Yes,
+    Yes;
+
+Site:Location,
+    Stockholm,
+    59.35,
+    17.95,
+    1.0,
+    44;
+
+GlobalGeometryRules,
+    UpperLeftCorner,
+    Counterclockwise,
+    Relative;
+
+ScheduleTypeLimits,
+    Fraction,
+    0,
+    1,
+    Continuous;
+
+ScheduleTypeLimits,
+    Temperature,
+    -50,
+    50,
+    Continuous;
+
+ScheduleTypeLimits,
+    Any Number,
+    ,
+    ,
+    Continuous;
+
+Schedule:Constant,AlwaysOn,Fraction,1;
+Schedule:Constant,HeatSet,Temperature,21;
+Schedule:Constant,CoolSet,Temperature,50;
+Schedule:Constant,ThermType,Any Number,4;
+
+Material,
+    Concrete,
+    MediumRough,
+    0.2,
+    1.0,
+    2300,
+    880;
+
+Material,
+    Insulation,
+    MediumRough,
+    0.15,
+    0.04,
+    30,
+    840;
+
+Construction,
+    WallConst,
+    Concrete,
+    Insulation;
+
+Construction,
+    FloorConst,
+    Concrete,
+    Insulation;
+
+Zone,
+    TestZone,
+    0,
+    0,0,0,
+    1,
+    1,
+    3,
+    100;
+
+BuildingSurface:Detailed,
+    Floor,
+    Floor,
+    FloorConst,
+    TestZone,
+    ,
+    Ground,
+    ,
+    NoSun,
+    NoWind,
+    ,
+    4,
+    0,0,0,
+    10,0,0,
+    10,10,0,
+    0,10,0;
+
+BuildingSurface:Detailed,
+    Roof,
+    Roof,
+    WallConst,
+    TestZone,
+    ,
+    Outdoors,
+    ,
+    SunExposed,
+    WindExposed,
+    ,
+    4,
+    0,10,3,
+    10,10,3,
+    10,0,3,
+    0,0,3;
+
+BuildingSurface:Detailed,
+    Wall1,
+    Wall,
+    WallConst,
+    TestZone,
+    ,
+    Outdoors,
+    ,
+    SunExposed,
+    WindExposed,
+    ,
+    4,
+    0,0,3,
+    0,0,0,
+    10,0,0,
+    10,0,3;
+
+BuildingSurface:Detailed,
+    Wall2,
+    Wall,
+    WallConst,
+    TestZone,
+    ,
+    Outdoors,
+    ,
+    SunExposed,
+    WindExposed,
+    ,
+    4,
+    10,0,3,
+    10,0,0,
+    10,10,0,
+    10,10,3;
+
+BuildingSurface:Detailed,
+    Wall3,
+    Wall,
+    WallConst,
+    TestZone,
+    ,
+    Outdoors,
+    ,
+    SunExposed,
+    WindExposed,
+    ,
+    4,
+    10,10,3,
+    10,10,0,
+    0,10,0,
+    0,10,3;
+
+BuildingSurface:Detailed,
+    Wall4,
+    Wall,
+    WallConst,
+    TestZone,
+    ,
+    Outdoors,
+    ,
+    SunExposed,
+    WindExposed,
+    ,
+    4,
+    0,10,3,
+    0,10,0,
+    0,0,0,
+    0,0,3;
+
+ZoneHVAC:IdealLoadsAirSystem,
+    IdealLoads,
+    ,
+    SupplyNode,
+    ExNode,
+    ,
+    50,
+    13,
+    0.015,
+    0.009,
+    NoLimit,
+    autosize,
+    ,
+    NoLimit,
+    autosize,
+    ,
+    ,
+    ,
+    ConstantSupplyHumidityRatio,
+    ,
+    ConstantSupplyHumidityRatio;
+
+ZoneHVAC:EquipmentList,
+    EquipList,
+    SequentialLoad,
+    ZoneHVAC:IdealLoadsAirSystem,
+    IdealLoads,
+    1,
+    1;
+
+ZoneHVAC:EquipmentConnections,
+    TestZone,
+    EquipList,
+    SupplyNode,
+    ExNode,
+    ZoneAirNode,
+    ReturnNode;
+
+ZoneControl:Thermostat,
+    Thermostat,
+    TestZone,
+    ThermType,
+    ThermostatSetpoint:DualSetpoint,
+    DualSet;
+
+ThermostatSetpoint:DualSetpoint,
+    DualSet,HeatSet,CoolSet;
+
+Output:Variable,*,Zone Ideal Loads Zone Total Heating Energy,Hourly;
+OutputControl:Table:Style,Comma,JtoKWH;
+Output:Table:SummaryReports,AllSummary;

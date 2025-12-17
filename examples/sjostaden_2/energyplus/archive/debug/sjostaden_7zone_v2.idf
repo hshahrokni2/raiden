@@ -1,0 +1,2086 @@
+!- Sjöstaden 2 - 7-Zone Per-Floor Model
+!- Full 8760-hour annual simulation
+!- Building: 7 floors, 2200 m² Atemp, Stockholm climate
+Version,25.1;
+
+Building,
+    Sjostaden_2_7Zone,        !- Name
+    0,                        !- North Axis
+    City,                     !- Terrain
+    0.04,                     !- Loads Convergence Tolerance Value
+    0.4,                      !- Temperature Convergence Tolerance Value
+    FullInteriorAndExterior,  !- Solar Distribution (for inter-zone)
+    25,                       !- Maximum Number of Warmup Days
+    6;                        !- Minimum Number of Warmup Days
+
+Timestep,4;
+
+SimulationControl,
+    No,                       !- Do Zone Sizing Calculation
+    No,                       !- Do System Sizing Calculation
+    No,                       !- Do Plant Sizing Calculation
+    No,                       !- Run Simulation for Sizing Periods
+    Yes;                      !- Run Simulation for Weather File Run Periods
+
+RunPeriod,
+    Annual,                   !- Name
+    1,                        !- Begin Month
+    1,                        !- Begin Day of Month
+    ,                         !- Begin Year
+    12,                       !- End Month
+    31,                       !- End Day of Month
+    ,                         !- End Year
+    Sunday,                   !- Day of Week for Start Day
+    No,                       !- Use Weather File Holidays and Special Days
+    No,                       !- Use Weather File Daylight Saving Period
+    No,                       !- Apply Weekend Holiday Rule
+    Yes,                      !- Use Weather File Rain Indicators
+    Yes;                      !- Use Weather File Snow Indicators
+
+GlobalGeometryRules,
+    UpperLeftCorner,          !- Starting Vertex Position
+    Counterclockwise,         !- Vertex Entry Direction
+    Relative;                 !- Coordinate System
+
+!- Ground temperature (Swedish average soil temp)
+Site:GroundTemperature:BuildingSurface,
+    8, 8, 8, 10, 12, 14, 16, 16, 14, 12, 10, 8;
+
+!- Schedule Type Limits
+ScheduleTypeLimits,
+    Fraction,                 !- Name
+    0,                        !- Lower Limit Value
+    1,                        !- Upper Limit Value
+    Continuous,               !- Numeric Type
+    Dimensionless;            !- Unit Type
+
+ScheduleTypeLimits,
+    Temperature,              !- Name
+    -50,                      !- Lower Limit Value
+    50,                       !- Upper Limit Value
+    Continuous,               !- Numeric Type
+    Temperature;              !- Unit Type
+
+ScheduleTypeLimits,
+    Any Number,               !- Name
+    ,                         !- Lower Limit Value
+    ,                         !- Upper Limit Value
+    Continuous;               !- Numeric Type
+
+!- Constant schedules
+Schedule:Constant,AlwaysOn,Fraction,1;
+Schedule:Constant,ActivityLevel,Any Number,120;
+Schedule:Constant,HeatingSetpoint,Temperature,21;
+Schedule:Constant,CoolingSetpoint,Temperature,26;
+Schedule:Constant,ThermostatType,Any Number,4;
+
+!- Sveby residential schedules
+Schedule:Compact,
+    OccupancySchedule,        !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: AllDays,             !- Field 2
+    Until: 07:00, 0.9,
+    Until: 09:00, 0.5,
+    Until: 17:00, 0.2,
+    Until: 22:00, 0.9,
+    Until: 24:00, 0.9;
+
+Schedule:Compact,
+    LightingSchedule,         !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: AllDays,             !- Field 2
+    Until: 06:00, 0.05,
+    Until: 08:00, 0.5,
+    Until: 17:00, 0.1,
+    Until: 22:00, 0.7,
+    Until: 24:00, 0.3;
+
+Schedule:Compact,
+    EquipmentSchedule,        !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: AllDays,             !- Field 2
+    Until: 07:00, 0.3,
+    Until: 09:00, 0.6,
+    Until: 17:00, 0.3,
+    Until: 22:00, 0.7,
+    Until: 24:00, 0.4;
+
+!- Materials (back-calculated U-values from measured 33 kWh/m²/year)
+Material,
+    Concrete200,              !- Name
+    MediumRough,              !- Roughness
+    0.2,                      !- Thickness (m)
+    1.7,                      !- Conductivity (W/m-K)
+    2300,                     !- Density (kg/m3)
+    900;                      !- Specific Heat (J/kg-K)
+
+Material,
+    Concrete150,              !- Name
+    MediumRough,              !- Roughness
+    0.15,                     !- Thickness (m)
+    1.7,                      !- Conductivity (W/m-K)
+    2300,                     !- Density (kg/m3)
+    900;                      !- Specific Heat (J/kg-K)
+
+Material,
+    WallInsulation,           !- Name
+    MediumRough,              !- Roughness
+    0.28,                     !- Thickness → U=0.11 W/m²K
+    0.035,                    !- Conductivity (mineral wool)
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Material,
+    RoofInsulation,           !- Name
+    MediumRough,              !- Roughness
+    0.40,                     !- Thickness → U=0.08 W/m²K
+    0.035,                    !- Conductivity
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Material,
+    FloorInsulation,          !- Name
+    MediumRough,              !- Roughness
+    0.15,                     !- Thickness (ground floor)
+    0.035,                    !- Conductivity
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Construction,
+    ExteriorWall,             !- Name
+    Concrete200,              !- Outside Layer
+    WallInsulation;           !- Inside Layer
+
+Construction,
+    Roof,                     !- Name
+    Concrete200,              !- Outside Layer
+    RoofInsulation;           !- Inside Layer
+
+Construction,
+    GroundFloor,              !- Name
+    Concrete200,              !- Outside Layer
+    FloorInsulation;          !- Inside Layer
+
+Construction,
+    InteriorFloor,            !- Name
+    Concrete150;              !- Single layer (thermal mass)
+
+!- Triple glazing (U=0.8 from back-calculation)
+WindowMaterial:SimpleGlazingSystem,
+    TripleGlazing,            !- Name
+    0.8,                      !- U-Factor (W/m²K)
+    0.5,                      !- Solar Heat Gain Coefficient
+    0.65;                     !- Visible Transmittance
+
+Construction,
+    WindowConstruction,       !- Name
+    TripleGlazing;            !- Outside Layer
+
+!- ============================================================
+!- ZONE DEFINITIONS (7 floors)
+!- Building footprint: 20m x 16m = 320 m² per floor
+!- Total: 320 x 7 = 2240 m² ≈ 2200 m² Atemp
+!- ============================================================
+
+Zone,
+    Floor1,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 0,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume (320 m² x 3m)
+
+Zone,
+    Floor2,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 3,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor3,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 6,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor4,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 9,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor5,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 12,                 !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor6,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 15,                 !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor7,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 18,                 !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+!- ============================================================
+!- FLOOR 1 SURFACES (Ground floor)
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor1_Floor,             !- Name
+    Floor,                    !- Surface Type
+    GroundFloor,              !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Ground,                   !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 0,
+    0, 16, 0,
+    20, 16, 0,
+    20, 0, 0;
+
+BuildingSurface:Detailed,
+    Floor1_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor2_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 3,
+    20, 16, 3,
+    0, 16, 3,
+    0, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 3,
+    0, 16, 0,
+    20, 16, 0,
+    20, 16, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 3,
+    20, 0, 0,
+    0, 0, 0,
+    0, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 3,
+    20, 16, 0,
+    20, 0, 0,
+    20, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 3,
+    0, 0, 0,
+    0, 16, 0,
+    0, 16, 3;
+
+!- Floor 1 Windows (WWR ~17%)
+FenestrationSurface:Detailed,
+    Floor1_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 2.5,
+    16, 0, 0.8,
+    4, 0, 0.8,
+    4, 0, 2.5;
+
+FenestrationSurface:Detailed,
+    Floor1_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 2.5,
+    4, 16, 0.8,
+    16, 16, 0.8,
+    16, 16, 2.5;
+
+FenestrationSurface:Detailed,
+    Floor1_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 2.5,
+    20, 12, 0.8,
+    20, 4, 0.8,
+    20, 4, 2.5;
+
+FenestrationSurface:Detailed,
+    Floor1_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 2.5,
+    0, 4, 0.8,
+    0, 12, 0.8,
+    0, 12, 2.5;
+
+!- ============================================================
+!- FLOOR 2 SURFACES
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor2_Floor,             !- Name
+    Floor,                    !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor2,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor1_Ceiling,           !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 3,
+    0, 16, 3,
+    20, 16, 3,
+    20, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor2_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor2,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor3_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 6,
+    20, 16, 6,
+    0, 16, 6,
+    0, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor2,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 6,
+    0, 16, 3,
+    20, 16, 3,
+    20, 16, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor2,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 6,
+    20, 0, 3,
+    0, 0, 3,
+    0, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor2,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 6,
+    20, 16, 3,
+    20, 0, 3,
+    20, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor2,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 6,
+    0, 0, 3,
+    0, 16, 3,
+    0, 16, 6;
+
+FenestrationSurface:Detailed,
+    Floor2_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor2_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 5.5,
+    16, 0, 3.8,
+    4, 0, 3.8,
+    4, 0, 5.5;
+
+FenestrationSurface:Detailed,
+    Floor2_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor2_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 5.5,
+    4, 16, 3.8,
+    16, 16, 3.8,
+    16, 16, 5.5;
+
+FenestrationSurface:Detailed,
+    Floor2_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor2_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 5.5,
+    20, 12, 3.8,
+    20, 4, 3.8,
+    20, 4, 5.5;
+
+FenestrationSurface:Detailed,
+    Floor2_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor2_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 5.5,
+    0, 4, 3.8,
+    0, 12, 3.8,
+    0, 12, 5.5;
+
+!- ============================================================
+!- FLOOR 3 SURFACES
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor3_Floor,             !- Name
+    Floor,                    !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor3,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor2_Ceiling,           !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 6,
+    0, 16, 6,
+    20, 16, 6,
+    20, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor3_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor3,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor4_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 9,
+    20, 16, 9,
+    0, 16, 9,
+    0, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor3,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 9,
+    0, 16, 6,
+    20, 16, 6,
+    20, 16, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor3,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 9,
+    20, 0, 6,
+    0, 0, 6,
+    0, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor3,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 9,
+    20, 16, 6,
+    20, 0, 6,
+    20, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor3,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 9,
+    0, 0, 6,
+    0, 16, 6,
+    0, 16, 9;
+
+FenestrationSurface:Detailed,
+    Floor3_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor3_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 8.5,
+    16, 0, 6.8,
+    4, 0, 6.8,
+    4, 0, 8.5;
+
+FenestrationSurface:Detailed,
+    Floor3_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor3_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 8.5,
+    4, 16, 6.8,
+    16, 16, 6.8,
+    16, 16, 8.5;
+
+FenestrationSurface:Detailed,
+    Floor3_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor3_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 8.5,
+    20, 12, 6.8,
+    20, 4, 6.8,
+    20, 4, 8.5;
+
+FenestrationSurface:Detailed,
+    Floor3_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor3_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 8.5,
+    0, 4, 6.8,
+    0, 12, 6.8,
+    0, 12, 8.5;
+
+!- ============================================================
+!- FLOOR 4 SURFACES (Middle floor)
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor4_Floor,             !- Name
+    Floor,                    !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor4,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor3_Ceiling,           !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 9,
+    0, 16, 9,
+    20, 16, 9,
+    20, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor4_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor4,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor5_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 12,
+    20, 16, 12,
+    0, 16, 12,
+    0, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor4,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 12,
+    0, 16, 9,
+    20, 16, 9,
+    20, 16, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor4,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 12,
+    20, 0, 9,
+    0, 0, 9,
+    0, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor4,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 12,
+    20, 16, 9,
+    20, 0, 9,
+    20, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor4,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 12,
+    0, 0, 9,
+    0, 16, 9,
+    0, 16, 12;
+
+FenestrationSurface:Detailed,
+    Floor4_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor4_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 11.5,
+    16, 0, 9.8,
+    4, 0, 9.8,
+    4, 0, 11.5;
+
+FenestrationSurface:Detailed,
+    Floor4_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor4_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 11.5,
+    4, 16, 9.8,
+    16, 16, 9.8,
+    16, 16, 11.5;
+
+FenestrationSurface:Detailed,
+    Floor4_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor4_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 11.5,
+    20, 12, 9.8,
+    20, 4, 9.8,
+    20, 4, 11.5;
+
+FenestrationSurface:Detailed,
+    Floor4_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor4_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 11.5,
+    0, 4, 9.8,
+    0, 12, 9.8,
+    0, 12, 11.5;
+
+!- ============================================================
+!- FLOOR 5 SURFACES
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor5_Floor,             !- Name
+    Floor,                    !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor5,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor4_Ceiling,           !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 12,
+    0, 16, 12,
+    20, 16, 12,
+    20, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor5_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor5,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor6_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 15,
+    20, 16, 15,
+    0, 16, 15,
+    0, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor5,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 15,
+    0, 16, 12,
+    20, 16, 12,
+    20, 16, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor5,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 15,
+    20, 0, 12,
+    0, 0, 12,
+    0, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor5,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 15,
+    20, 16, 12,
+    20, 0, 12,
+    20, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor5,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 15,
+    0, 0, 12,
+    0, 16, 12,
+    0, 16, 15;
+
+FenestrationSurface:Detailed,
+    Floor5_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor5_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 14.5,
+    16, 0, 12.8,
+    4, 0, 12.8,
+    4, 0, 14.5;
+
+FenestrationSurface:Detailed,
+    Floor5_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor5_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 14.5,
+    4, 16, 12.8,
+    16, 16, 12.8,
+    16, 16, 14.5;
+
+FenestrationSurface:Detailed,
+    Floor5_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor5_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 14.5,
+    20, 12, 12.8,
+    20, 4, 12.8,
+    20, 4, 14.5;
+
+FenestrationSurface:Detailed,
+    Floor5_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor5_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 14.5,
+    0, 4, 12.8,
+    0, 12, 12.8,
+    0, 12, 14.5;
+
+!- ============================================================
+!- FLOOR 6 SURFACES
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor6_Floor,             !- Name
+    Floor,                    !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor6,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor5_Ceiling,           !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 15,
+    0, 16, 15,
+    20, 16, 15,
+    20, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor6_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor6,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor7_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 18,
+    20, 16, 18,
+    0, 16, 18,
+    0, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor6,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 18,
+    0, 16, 15,
+    20, 16, 15,
+    20, 16, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor6,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 18,
+    20, 0, 15,
+    0, 0, 15,
+    0, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor6,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 18,
+    20, 16, 15,
+    20, 0, 15,
+    20, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor6,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 18,
+    0, 0, 15,
+    0, 16, 15,
+    0, 16, 18;
+
+FenestrationSurface:Detailed,
+    Floor6_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor6_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 17.5,
+    16, 0, 15.8,
+    4, 0, 15.8,
+    4, 0, 17.5;
+
+FenestrationSurface:Detailed,
+    Floor6_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor6_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 17.5,
+    4, 16, 15.8,
+    16, 16, 15.8,
+    16, 16, 17.5;
+
+FenestrationSurface:Detailed,
+    Floor6_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor6_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 17.5,
+    20, 12, 15.8,
+    20, 4, 15.8,
+    20, 4, 17.5;
+
+FenestrationSurface:Detailed,
+    Floor6_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor6_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 17.5,
+    0, 4, 15.8,
+    0, 12, 15.8,
+    0, 12, 17.5;
+
+!- ============================================================
+!- FLOOR 7 SURFACES (Top floor - roof exposure)
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor7_Floor,             !- Name
+    Floor,                    !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor6_Ceiling,           !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 18,
+    0, 16, 18,
+    20, 16, 18,
+    20, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor7_Roof,              !- Name
+    Roof,                     !- Surface Type
+    Roof,                     !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 21,
+    20, 16, 21,
+    0, 16, 21,
+    0, 0, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 21,
+    0, 16, 18,
+    20, 16, 18,
+    20, 16, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 21,
+    20, 0, 18,
+    0, 0, 18,
+    0, 0, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 21,
+    20, 16, 18,
+    20, 0, 18,
+    20, 0, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 21,
+    0, 0, 18,
+    0, 16, 18,
+    0, 16, 21;
+
+FenestrationSurface:Detailed,
+    Floor7_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor7_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 20.5,
+    16, 0, 18.8,
+    4, 0, 18.8,
+    4, 0, 20.5;
+
+FenestrationSurface:Detailed,
+    Floor7_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor7_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 20.5,
+    4, 16, 18.8,
+    16, 16, 18.8,
+    16, 16, 20.5;
+
+FenestrationSurface:Detailed,
+    Floor7_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor7_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 20.5,
+    20, 12, 18.8,
+    20, 4, 18.8,
+    20, 4, 20.5;
+
+FenestrationSurface:Detailed,
+    Floor7_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor7_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 20.5,
+    0, 4, 18.8,
+    0, 12, 18.8,
+    0, 12, 20.5;
+
+!- ============================================================
+!- INTERNAL LOADS (Sveby residential, distributed per floor)
+!- 73 people total → ~10 per floor
+!- Lighting: 8 W/m², Equipment: 12 W/m²
+!- ============================================================
+
+!- Floor 1 Loads
+People,
+    Floor1_People,            !- Name
+    Floor1,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    10,                       !- Number of People
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor1_Lights,            !- Name
+    Floor1,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor1_Equipment,         !- Name
+    Floor1,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- Floor 2 Loads
+People,
+    Floor2_People,            !- Name
+    Floor2,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    10,                       !- Number of People
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor2_Lights,            !- Name
+    Floor2,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor2_Equipment,         !- Name
+    Floor2,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- Floor 3 Loads
+People,
+    Floor3_People,            !- Name
+    Floor3,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    10,                       !- Number of People
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor3_Lights,            !- Name
+    Floor3,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor3_Equipment,         !- Name
+    Floor3,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- Floor 4 Loads
+People,
+    Floor4_People,            !- Name
+    Floor4,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    11,                       !- Number of People (extra 1)
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor4_Lights,            !- Name
+    Floor4,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor4_Equipment,         !- Name
+    Floor4,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- Floor 5 Loads
+People,
+    Floor5_People,            !- Name
+    Floor5,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    11,                       !- Number of People
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor5_Lights,            !- Name
+    Floor5,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor5_Equipment,         !- Name
+    Floor5,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- Floor 6 Loads
+People,
+    Floor6_People,            !- Name
+    Floor6,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    11,                       !- Number of People
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor6_Lights,            !- Name
+    Floor6,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor6_Equipment,         !- Name
+    Floor6,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- Floor 7 Loads
+People,
+    Floor7_People,            !- Name
+    Floor7,                   !- Zone Name
+    OccupancySchedule,        !- Schedule Name
+    People,                   !- Calculation Method
+    10,                       !- Number of People
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule
+
+Lights,
+    Floor7_Lights,            !- Name
+    Floor7,                   !- Zone Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+ElectricEquipment,
+    Floor7_Equipment,         !- Name
+    Floor7,                   !- Zone Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- ============================================================
+!- HVAC - IdealLoadsAirSystem per zone
+!- ============================================================
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor1_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor1_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor2_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor2_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor3_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor3_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor4_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor4_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor5_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor5_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor6_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor6_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor7_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor7_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+!- Equipment Lists
+ZoneHVAC:EquipmentList,
+    Floor1_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor1_IdealLoads,
+    1, 1;
+
+ZoneHVAC:EquipmentList,
+    Floor2_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor2_IdealLoads,
+    1,
+    1;
+
+ZoneHVAC:EquipmentList,
+    Floor3_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor3_IdealLoads,
+    1,
+    1;
+
+ZoneHVAC:EquipmentList,
+    Floor4_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor4_IdealLoads,
+    1,
+    1;
+
+ZoneHVAC:EquipmentList,
+    Floor5_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor5_IdealLoads,
+    1,
+    1;
+
+ZoneHVAC:EquipmentList,
+    Floor6_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor6_IdealLoads,
+    1,
+    1;
+
+ZoneHVAC:EquipmentList,
+    Floor7_EquipList,         !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,
+    Floor7_IdealLoads,
+    1,
+    1;
+
+!- Equipment Connections
+ZoneHVAC:EquipmentConnections,
+    Floor1,                   !- Zone Name
+    Floor1_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor1_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor1_AirNode,           !- Zone Air Node Name
+    Floor1_Return;            !- Zone Return Air Node or NodeList Name
+
+ZoneHVAC:EquipmentConnections,
+    Floor2,                   !- Zone Name
+    Floor2_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor2_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor2_AirNode,           !- Zone Air Node Name
+    Floor2_Return;            !- Zone Return Air Node or NodeList Name
+
+ZoneHVAC:EquipmentConnections,
+    Floor3,                   !- Zone Name
+    Floor3_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor3_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor3_AirNode,           !- Zone Air Node Name
+    Floor3_Return;            !- Zone Return Air Node or NodeList Name
+
+ZoneHVAC:EquipmentConnections,
+    Floor4,                   !- Zone Name
+    Floor4_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor4_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor4_AirNode,           !- Zone Air Node Name
+    Floor4_Return;            !- Zone Return Air Node or NodeList Name
+
+ZoneHVAC:EquipmentConnections,
+    Floor5,                   !- Zone Name
+    Floor5_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor5_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor5_AirNode,           !- Zone Air Node Name
+    Floor5_Return;            !- Zone Return Air Node or NodeList Name
+
+ZoneHVAC:EquipmentConnections,
+    Floor6,                   !- Zone Name
+    Floor6_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor6_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor6_AirNode,           !- Zone Air Node Name
+    Floor6_Return;            !- Zone Return Air Node or NodeList Name
+
+ZoneHVAC:EquipmentConnections,
+    Floor7,                   !- Zone Name
+    Floor7_EquipList,         !- Zone Conditioning Equipment List Name
+    Floor7_Supply,            !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    Floor7_AirNode,           !- Zone Air Node Name
+    Floor7_Return;            !- Zone Return Air Node or NodeList Name
+
+!- Thermostats
+ZoneControl:Thermostat,
+    Floor1_Thermostat,        !- Name
+    Floor1,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor1_DualSetpoint;
+
+ZoneControl:Thermostat,
+    Floor2_Thermostat,        !- Name
+    Floor2,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor2_DualSetpoint;
+
+ZoneControl:Thermostat,
+    Floor3_Thermostat,        !- Name
+    Floor3,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor3_DualSetpoint;
+
+ZoneControl:Thermostat,
+    Floor4_Thermostat,        !- Name
+    Floor4,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor4_DualSetpoint;
+
+ZoneControl:Thermostat,
+    Floor5_Thermostat,        !- Name
+    Floor5,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor5_DualSetpoint;
+
+ZoneControl:Thermostat,
+    Floor6_Thermostat,        !- Name
+    Floor6,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor6_DualSetpoint;
+
+ZoneControl:Thermostat,
+    Floor7_Thermostat,        !- Name
+    Floor7,                   !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,
+    Floor7_DualSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor1_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor2_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor3_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor4_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor5_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor6_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+ThermostatSetpoint:DualSetpoint,
+    Floor7_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+!- ============================================================
+!- OUTPUT - Hourly for 8760
+!- ============================================================
+
+Output:Variable,*,Zone Ideal Loads Zone Total Heating Energy,Hourly;
+Output:Variable,*,Zone Ideal Loads Zone Total Cooling Energy,Hourly;
+Output:Variable,*,Zone Mean Air Temperature,Hourly;
+Output:Variable,*,Zone Air System Sensible Heating Energy,Hourly;
+Output:Variable,*,Zone Air System Sensible Cooling Energy,Hourly;
+
+Output:Meter,Heating:EnergyTransfer,Hourly;
+Output:Meter,Cooling:EnergyTransfer,Hourly;
+
+OutputControl:Table:Style,Comma,JtoKWH;
+Output:Table:SummaryReports,
+    AllSummary,
+    ZoneComponentLoadSummary;

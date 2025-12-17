@@ -1,4 +1,4 @@
-# EnergyPlus Output Files (large)
+# EnergyPlus Output Files
 *.eso
 *.mtr
 *.mdd
@@ -10,7 +10,7 @@
 *.shd
 *.mtd
 
-# Keep these output files
+# Keep these output files (tracked)
 !output_final/eplustbl.csv
 !output_final/eplustbl.htm
 !output_final/eplusout.err
@@ -19,26 +19,18 @@
 # Weather Files (large, download from EnergyPlus website)
 *.epw
 
+# macOS
+.DS_Store
+._*
+
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 .eggs/
 *.egg
 .venv/
 venv/
-env/
-.env
-dist/
-build/
-
-# Cache directories (can be regenerated)
-data/cache/
-
-# macOS
-.DS_Store
-._*
 
 # IDEs
 .vscode/
@@ -47,17 +39,10 @@ data/cache/
 *.swo
 *~
 
-# Jupyter
-.ipynb_checkpoints/
+# Archive folder (optional - comment out if you want to keep debug files)
+# archive/
 
 # Temporary files
 *.tmp
 *.bak
 *.backup
-*.log
-
-# Large model files
-*.h5
-*.pt
-*.pth
-*.onnx

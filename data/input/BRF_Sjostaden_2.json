@@ -1,0 +1,290 @@
+{
+  "brf_name": "BRF SJÖSTADEN 2",
+  "source_file": "Generated_Buildings.geojson",
+  "coordinate_system": "EPSG:3006 (SWEREF99 TM)",
+  "buildings": [
+    {
+      "building_id": 1,
+      "geometry": {
+        "type": "MultiPolygon",
+        "height_meters": 16.6,
+        "coordinates_3d": [
+          [676705.11, 6577802.32, 16.6],
+          [676714.76, 6577796.45, 16.6],
+          [676717.35, 6577794.88, 16.6],
+          [676725.22, 6577790.12, 16.6],
+          [676736.21, 6577809.64, 16.6],
+          [676750.37, 6577835.69, 16.6],
+          [676741.28, 6577841.20, 16.6],
+          [676740.50, 6577841.67, 16.6],
+          [676721.63, 6577810.59, 16.6],
+          [676716.61, 6577813.64, 16.6],
+          [676713.83, 6577811.20, 16.6],
+          [676711.10, 6577808.50, 16.6],
+          [676706.37, 6577804.43, 16.6],
+          [676705.11, 6577802.32, 16.6]
+        ],
+        "ground_footprint": [
+          [676705.11, 6577802.32, 0.0],
+          [676714.76, 6577796.45, 0.0],
+          [676717.35, 6577794.88, 0.0],
+          [676725.22, 6577790.12, 0.0],
+          [676736.21, 6577809.64, 0.0],
+          [676750.37, 6577835.69, 0.0],
+          [676741.28, 6577841.20, 0.0],
+          [676740.50, 6577841.67, 0.0],
+          [676721.63, 6577810.59, 0.0],
+          [676716.61, 6577813.64, 0.0],
+          [676713.83, 6577811.20, 0.0],
+          [676711.10, 6577808.50, 0.0],
+          [676706.37, 6577804.43, 0.0],
+          [676705.11, 6577802.32, 0.0]
+        ]
+      },
+      "properties": {
+        "ownership": {
+          "owner": "BRF SJÖSTADEN 2",
+          "owner_type_simple": "Bostadsrättsförening",
+          "owner_type_detailed": "Liten bostadsrättsförening"
+        },
+        "building_info": {
+          "purpose": "Flerbostadshus",
+          "category": "Flerbostadshus",
+          "building_type": "Gavel",
+          "uuid": "5cae892b-5604-4004-b54c-8e115044198b",
+          "construction_year": 2003,
+          "tax_value_year": 2003,
+          "last_renovation_year": 2018
+        },
+        "dimensions": {
+          "heated_area_sqm": 15350,
+          "footprint_area_sqm": 2100.59,
+          "building_height_m": 21,
+          "floors_above_ground": 7,
+          "basement_floors": 1,
+          "staircases": 7,
+          "apartments": 110,
+          "unheated_garage_sqm": 2000
+        },
+        "space_usage_percent": {
+          "residential": 85,
+          "office": 5,
+          "grocery": 5,
+          "restaurant": 5,
+          "total": 100
+        },
+        "energy": {
+          "energy_class": "B",
+          "energy_performance_kwh_per_sqm": 53,
+          "total_energy_consumption_kwh": 512623,
+          "primary_energy_consumption_kwh": 820196,
+          "property_electricity_kwh": 163534,
+          "hot_water_electricity_kwh": 110264,
+          "estimated_electricity_production_kwh": 75000,
+          "heating": {
+            "exhaust_air_heat_pump_kwh": 30567,
+            "ground_source_heat_pump_kwh": 173215,
+            "district_heating_kwh": 0,
+            "oil_kwh": 0,
+            "gas_kwh": 0,
+            "wood_kwh": 0,
+            "biofuel_kwh": 0
+          },
+          "solar": {
+            "has_solar_cells": true,
+            "solar_cell_output_kwh": 500,
+            "has_solar_thermal": false
+          },
+          "measurement_period": {
+            "start": "2019-01",
+            "end": "2019-12"
+          },
+          "reference_values": {
+            "reference_value_1": 84,
+            "reference_value_2_max": 142
+          }
+        },
+        "ventilation": {
+          "approved": true,
+          "requirement_met": true,
+          "types": {
+            "exhaust_only_F": true,
+            "exhaust_with_heat_recovery_Fmed": true,
+            "supply_exhaust_FT": false,
+            "supply_exhaust_heat_recovery_FTX": true,
+            "natural_ventilation": false
+          }
+        },
+        "location": {
+          "address": "Aktergatan 11",
+          "property_designation": "Brädgården 9",
+          "house_number": 2,
+          "is_main_address": false,
+          "municipality": "Stockholm",
+          "municipality_code": 80,
+          "county": "Stockholms län",
+          "county_code": 1,
+          "postal_code": "12066",
+          "postal_area": "Stockholm"
+        },
+        "administrative": {
+          "fnr": 10482188,
+          "form_id": 1053847,
+          "approved_date": "2020-03-18",
+          "declaration_version": "2.6",
+          "energy_declaration_version": 2019
+        }
+      }
+    },
+    {
+      "building_id": 2,
+      "geometry": {
+        "type": "MultiPolygon",
+        "height_meters": 25.1,
+        "coordinates_3d": [
+          [676746.38, 6577898.68, 25.1],
+          [676739.68, 6577902.75, 25.1],
+          [676736.12, 6577904.92, 25.1],
+          [676733.51, 6577900.61, 25.1],
+          [676696.33, 6577839.34, 25.1],
+          [676690.85, 6577830.30, 25.1],
+          [676700.42, 6577824.43, 25.1],
+          [676699.53, 6577822.99, 25.1],
+          [676691.89, 6577810.33, 25.1],
+          [676701.69, 6577804.39, 25.1],
+          [676702.85, 6577806.29, 25.1],
+          [676703.62, 6577808.67, 25.1],
+          [676704.27, 6577812.64, 25.1],
+          [676705.42, 6577816.31, 25.1],
+          [676708.52, 6577826.02, 25.1],
+          [676704.06, 6577828.73, 25.1],
+          [676746.38, 6577898.68, 25.1]
+        ],
+        "ground_footprint": [
+          [676746.38, 6577898.68, 0.0],
+          [676739.68, 6577902.75, 0.0],
+          [676736.12, 6577904.92, 0.0],
+          [676733.51, 6577900.61, 0.0],
+          [676696.33, 6577839.34, 0.0],
+          [676690.85, 6577830.30, 0.0],
+          [676700.42, 6577824.43, 0.0],
+          [676699.53, 6577822.99, 0.0],
+          [676691.89, 6577810.33, 0.0],
+          [676701.69, 6577804.39, 0.0],
+          [676702.85, 6577806.29, 0.0],
+          [676703.62, 6577808.67, 0.0],
+          [676704.27, 6577812.64, 0.0],
+          [676705.42, 6577816.31, 0.0],
+          [676708.52, 6577826.02, 0.0],
+          [676704.06, 6577828.73, 0.0],
+          [676746.38, 6577898.68, 0.0]
+        ]
+      },
+      "properties": {
+        "ownership": {
+          "owner": "BRF SJÖSTADEN 2",
+          "owner_type_simple": "Bostadsrättsförening",
+          "owner_type_detailed": "Liten bostadsrättsförening"
+        },
+        "building_info": {
+          "purpose": "Flerbostadshus",
+          "category": "Flerbostadshus",
+          "building_type": "Gavel",
+          "uuid": "08600e8e-bb0c-4875-903b-3bc9eaa771b4",
+          "construction_year": 2003,
+          "tax_value_year": 2003,
+          "last_renovation_year": 2018
+        },
+        "dimensions": {
+          "heated_area_sqm": 15350,
+          "footprint_area_sqm": 2100.59,
+          "building_height_m": 21,
+          "floors_above_ground": 7,
+          "basement_floors": 1,
+          "staircases": 7,
+          "apartments": 110,
+          "unheated_garage_sqm": 2000
+        },
+        "space_usage_percent": {
+          "residential": 85,
+          "office": 5,
+          "grocery": 5,
+          "restaurant": 5,
+          "total": 100
+        },
+        "energy": {
+          "energy_class": "B",
+          "energy_performance_kwh_per_sqm": 53,
+          "total_energy_consumption_kwh": 512623,
+          "primary_energy_consumption_kwh": 820196,
+          "property_electricity_kwh": 163534,
+          "hot_water_electricity_kwh": 110264,
+          "estimated_electricity_production_kwh": 75000,
+          "heating": {
+            "exhaust_air_heat_pump_kwh": 30567,
+            "ground_source_heat_pump_kwh": 173215,
+            "district_heating_kwh": 0,
+            "oil_kwh": 0,
+            "gas_kwh": 0,
+            "wood_kwh": 0,
+            "biofuel_kwh": 0
+          },
+          "solar": {
+            "has_solar_cells": true,
+            "solar_cell_output_kwh": 500,
+            "has_solar_thermal": false
+          },
+          "measurement_period": {
+            "start": "2019-01",
+            "end": "2019-12"
+          },
+          "reference_values": {
+            "reference_value_1": 84,
+            "reference_value_2_max": 142
+          }
+        },
+        "ventilation": {
+          "approved": true,
+          "requirement_met": true,
+          "types": {
+            "exhaust_only_F": true,
+            "exhaust_with_heat_recovery_Fmed": true,
+            "supply_exhaust_FT": false,
+            "supply_exhaust_heat_recovery_FTX": true,
+            "natural_ventilation": false
+          }
+        },
+        "location": {
+          "address": "Aktergatan 11",
+          "property_designation": "Brädgården 9",
+          "house_number": 2,
+          "is_main_address": false,
+          "municipality": "Stockholm",
+          "municipality_code": 80,
+          "county": "Stockholms län",
+          "county_code": 1,
+          "postal_code": "12066",
+          "postal_area": "Stockholm"
+        },
+        "administrative": {
+          "fnr": 10482188,
+          "form_id": 1053847,
+          "approved_date": "2020-03-18",
+          "declaration_version": "2.6",
+          "energy_declaration_version": 2019
+        }
+      }
+    }
+  ],
+  "summary": {
+    "total_buildings": 2,
+    "total_apartments": 110,
+    "total_heated_area_sqm": 15350,
+    "construction_year": 2003,
+    "energy_class": "B",
+    "energy_performance_kwh_per_sqm": 53,
+    "heating_system": "Ground source heat pump + Exhaust air heat pump",
+    "has_solar_panels": true,
+    "location": "Hammarby Sjöstad, Stockholm"
+  }
+}

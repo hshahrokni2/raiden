@@ -1,0 +1,12 @@
+Program Version,EnergyPlus, Version 25.1.0-68a4a7c774, YMD=2025.12.16 22:20,
+   ** Severe  ** <root>[Material][WallInsulation] - Missing required property 'density'.
+   ** Severe  ** <root>[Material][WallInsulation] - Missing required property 'specific_heat'.
+   **  Fatal  ** Errors occurred on processing input file. Preceding condition(s) cause termination.
+   ...Summary of Errors that led to program termination:
+   ..... Reference severe error count=2
+   ..... Last severe error=<root>[Material][WallInsulation] - Missing required property 'specific_heat'.
+   ************* Warning:  Node connection errors not checked - most system input has not been read (see previous warning).
+   ************* Fatal error -- final processing.  Program exited before simulations began.  See previous error messages.
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Terminated--Fatal Error Detected. 0 Warning; 2 Severe Errors; Elapsed Time=00hr 00min  0.12sec

@@ -1,0 +1,95 @@
+[project]
+name = "brf-energy-toolkit"
+version = "0.1.0"
+description = "Building metadata enrichment and energy simulation toolkit for Swedish BRF properties"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Komilion", email = "dev@komilion.com"}
+]
+keywords = ["energy", "buildings", "simulation", "energyplus", "brf", "sweden"]
+
+dependencies = [
+    # Core
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "typer[all]>=0.9.0",
+    "rich>=13.0",
+
+    # Geospatial
+    "pyproj>=3.6",
+    "shapely>=2.0",
+    "geopandas>=0.14",
+    "overturemaps>=0.8",
+    "overpass>=0.7",
+
+    # Data processing
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "httpx>=0.25",
+    "aiohttp>=3.9",
+
+    # PDF parsing
+    "pdfplumber>=0.10",
+
+    # Image processing
+    "pillow>=10.0",
+    "opencv-python>=4.8",
+
+    # Visualization
+    "plotly>=5.18",
+    "pyvista>=0.43",
+    "trimesh>=4.0",
+
+    # EnergyPlus
+    "geomeppy>=0.11",
+    "eppy>=0.5",
+]
+
+[project.optional-dependencies]
+ai = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "transformers>=4.36",
+    "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
+    "groundingdino @ git+https://github.com/IDEA-Research/GroundingDINO.git",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.7",
+    "pre-commit>=3.6",
+]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+]
+
+[project.scripts]
+brf = "brf_energy_toolkit.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brf_energy_toolkit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

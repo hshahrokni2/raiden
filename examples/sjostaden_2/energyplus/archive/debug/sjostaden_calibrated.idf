@@ -1,0 +1,397 @@
+!- Calibrated EnergyPlus IDF for Sjöstaden 2
+!- Based on enriched data from GeoJSON, Energideklaration, and Mapillary imaging
+!- Building performs 70% better than era typical (33 vs 110 kWh/m²/year)
+Version,25.1;
+
+Building,
+    Sjostaden_2_Calibrated,   !- Name
+    0,                        !- North Axis
+    City,                     !- Terrain
+    0.04,                     !- Loads Convergence Tolerance Value
+    0.4,                      !- Temperature Convergence Tolerance Value
+    FullExterior,             !- Solar Distribution
+    25,                       !- Maximum Number of Warmup Days
+    6;                        !- Minimum Number of Warmup Days
+
+Timestep,4;
+
+SimulationControl,
+    Yes,                      !- Do Zone Sizing Calculation
+    No,                       !- Do System Sizing Calculation
+    No,                       !- Do Plant Sizing Calculation
+    No,                       !- Run Simulation for Sizing Periods
+    Yes;                      !- Run Simulation for Weather File Run Periods
+
+RunPeriod,
+    Annual,                   !- Name
+    1,                        !- Begin Month
+    1,                        !- Begin Day of Month
+    ,                         !- Begin Year
+    12,                       !- End Month
+    31,                       !- End Day of Month
+    ,                         !- End Year
+    Sunday,                   !- Day of Week for Start Day
+    No,                       !- Use Weather File Holidays and Special Days
+    No,                       !- Use Weather File Daylight Saving Period
+    No,                       !- Apply Weekend Holiday Rule
+    Yes,                      !- Use Weather File Rain Indicators
+    Yes;                      !- Use Weather File Snow Indicators
+
+GlobalGeometryRules,
+    UpperLeftCorner,          !- Starting Vertex Position
+    Counterclockwise,         !- Vertex Entry Direction
+    Relative;                 !- Coordinate System
+
+ScheduleTypeLimits,
+    Fraction,                 !- Name
+    0,                        !- Lower Limit Value
+    1,                        !- Upper Limit Value
+    Continuous,               !- Numeric Type
+    Dimensionless;            !- Unit Type
+
+ScheduleTypeLimits,
+    Temperature,              !- Name
+    -50,                      !- Lower Limit Value
+    50,                       !- Upper Limit Value
+    Continuous,               !- Numeric Type
+    Dimensionless;            !- Unit Type
+
+Schedule:Constant,AlwaysOn,,1;
+Schedule:Constant,ActivityLevel,,120;
+Schedule:Constant,HeatingSetpoint,,21;
+Schedule:Constant,CoolingSetpoint,,26;
+Schedule:Constant,ThermostatType,,4;
+
+!- Sveby residential schedules (Swedish building standard)
+Schedule:Compact,
+    OccupancySchedule,        !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: AllDays,             !- Field 2
+    Until: 07:00, 0.9,        !- Night occupancy
+    Until: 09:00, 0.5,        !- Morning
+    Until: 17:00, 0.2,        !- Daytime (at work)
+    Until: 22:00, 0.9,        !- Evening
+    Until: 24:00, 0.9;        !- Night
+
+Schedule:Compact,
+    LightingSchedule,         !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: AllDays,             !- Field 2
+    Until: 06:00, 0.05,       !- Night
+    Until: 08:00, 0.5,        !- Morning
+    Until: 17:00, 0.1,        !- Daytime
+    Until: 22:00, 0.7,        !- Evening
+    Until: 24:00, 0.3;        !- Late
+
+Schedule:Compact,
+    EquipmentSchedule,        !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: AllDays,             !- Field 2
+    Until: 07:00, 0.3,        !- Night (fridge, standby)
+    Until: 09:00, 0.6,        !- Morning
+    Until: 17:00, 0.3,        !- Daytime
+    Until: 22:00, 0.7,        !- Evening (cooking, TV)
+    Until: 24:00, 0.4;        !- Late
+
+!- Materials with back-calculated R-values from 33 kWh/m²/year measured
+Material,
+    Concrete,                 !- Name
+    MediumRough,              !- Roughness
+    0.2,                      !- Thickness (m)
+    1.7,                      !- Conductivity (W/m-K)
+    2300,                     !- Density (kg/m3)
+    900;                      !- Specific Heat (J/kg-K)
+
+Material,
+    WallInsulation,           !- Name
+    MediumRough,              !- Roughness
+    0.28,                     !- Thickness → U=0.11 W/m²K
+    0.035,                    !- Conductivity (mineral wool)
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Material,
+    RoofInsulation,           !- Name
+    MediumRough,              !- Roughness
+    0.40,                     !- Thickness → U=0.08 W/m²K
+    0.035,                    !- Conductivity
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Construction,
+    WallConstruction,         !- Name
+    Concrete,                 !- Outside Layer
+    WallInsulation;           !- Layer 2
+
+Construction,
+    RoofConstruction,         !- Name
+    Concrete,                 !- Outside Layer
+    RoofInsulation;           !- Layer 2
+
+Construction,
+    FloorConstruction,        !- Name
+    Concrete;                 !- Outside Layer
+
+!- Triple glazing for 2003 eco-district (U=0.8 from back-calculation)
+WindowMaterial:SimpleGlazingSystem,
+    TripleGlazing,            !- Name
+    0.8,                      !- U-Factor (W/m²K)
+    0.5,                      !- Solar Heat Gain Coefficient
+    0.65;                     !- Visible Transmittance
+
+Construction,
+    WindowConstruction,       !- Name
+    TripleGlazing;            !- Outside Layer
+
+!- Zone (simplified shoebox 50x44x21m representing 2200m² floor)
+Zone,
+    MainZone,                 !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 0,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    46200;                    !- Volume (m³) - full building
+
+!- Surfaces
+BuildingSurface:Detailed,
+    Floor,                    !- Name
+    Floor,                    !- Surface Type
+    FloorConstruction,        !- Construction Name
+    MainZone,                 !- Zone Name
+    ,                         !- Space Name
+    Ground,                   !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 0,
+    0, 44, 0,
+    50, 44, 0,
+    50, 0, 0;
+
+BuildingSurface:Detailed,
+    Roof,                     !- Name
+    Roof,                     !- Surface Type
+    RoofConstruction,         !- Construction Name
+    MainZone,                 !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    50, 0, 21,
+    50, 44, 21,
+    0, 44, 21,
+    0, 0, 21;
+
+BuildingSurface:Detailed,
+    WallNorth,                !- Name
+    Wall,                     !- Surface Type
+    WallConstruction,         !- Construction Name
+    MainZone,                 !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 44, 21,
+    0, 44, 0,
+    50, 44, 0,
+    50, 44, 21;
+
+BuildingSurface:Detailed,
+    WallSouth,                !- Name
+    Wall,                     !- Surface Type
+    WallConstruction,         !- Construction Name
+    MainZone,                 !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    50, 0, 21,
+    50, 0, 0,
+    0, 0, 0,
+    0, 0, 21;
+
+BuildingSurface:Detailed,
+    WallEast,                 !- Name
+    Wall,                     !- Surface Type
+    WallConstruction,         !- Construction Name
+    MainZone,                 !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    50, 44, 21,
+    50, 44, 0,
+    50, 0, 0,
+    50, 0, 21;
+
+BuildingSurface:Detailed,
+    WallWest,                 !- Name
+    Wall,                     !- Surface Type
+    WallConstruction,         !- Construction Name
+    MainZone,                 !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 21,
+    0, 0, 0,
+    0, 44, 0,
+    0, 44, 21;
+
+!- Windows (WWR ~17% from AI+era blend)
+FenestrationSurface:Detailed,
+    WindowSouth,              !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    WallSouth,                !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    40, 0, 18,
+    40, 0, 3,
+    10, 0, 3,
+    10, 0, 18;
+
+FenestrationSurface:Detailed,
+    WindowNorth,              !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    WallNorth,                !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    10, 44, 18,
+    10, 44, 3,
+    40, 44, 3,
+    40, 44, 18;
+
+!- Internal Loads (Sveby residential - provide "free heat")
+!- 73 people @ 30m²/person, 120W activity level
+People,
+    MainZone_People,          !- Name
+    MainZone,                 !- Zone or ZoneList or Space or SpaceList Name
+    OccupancySchedule,        !- Number of People Schedule Name
+    People,                   !- Number of People Calculation Method
+    73,                       !- Number of People (2200m² / 30m²/person)
+    ,                         !- People per Floor Area
+    ,                         !- Floor Area per Person
+    0.3,                      !- Fraction Radiant
+    autocalculate,            !- Sensible Heat Fraction
+    ActivityLevel;            !- Activity Level Schedule Name
+
+!- Lighting: 8 W/m² (LED, Sveby standard)
+Lights,
+    MainZone_Lights,          !- Name
+    MainZone,                 !- Zone or ZoneList or Space or SpaceList Name
+    LightingSchedule,         !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Lighting Level
+    8,                        !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Return Air Fraction
+    0.4,                      !- Fraction Radiant
+    0.2;                      !- Fraction Visible
+
+!- Equipment: 12 W/m² (appliances, Sveby standard)
+ElectricEquipment,
+    MainZone_Equipment,       !- Name
+    MainZone,                 !- Zone or ZoneList or Space or SpaceList Name
+    EquipmentSchedule,        !- Schedule Name
+    Watts/Area,               !- Design Level Calculation Method
+    ,                         !- Design Level
+    12,                       !- Watts per Floor Area
+    ,                         !- Watts per Person
+    0,                        !- Fraction Latent
+    0.3,                      !- Fraction Radiant
+    0;                        !- Fraction Lost
+
+!- HVAC - Ideal Loads (represents ground source + exhaust air heat pumps)
+ZoneHVAC:IdealLoadsAirSystem,
+    MainZone_IdealLoads,      !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    MainZone_Supply,          !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    None,                     !- Heat Recovery Type
+    0.7,                      !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:EquipmentList,
+    MainZone_EquipList,       !- Name
+    SequentialLoad,           !- Load Distribution Scheme
+    ZoneHVAC:IdealLoadsAirSystem,  !- Zone Equipment 1 Object Type
+    MainZone_IdealLoads,      !- Zone Equipment 1 Name
+    1,                        !- Zone Equipment 1 Cooling Sequence
+    1;                        !- Zone Equipment 1 Heating or NoLoad Sequence
+
+ZoneHVAC:EquipmentConnections,
+    MainZone,                 !- Zone Name
+    MainZone_EquipList,       !- Zone Conditioning Equipment List Name
+    MainZone_Supply,          !- Zone Air Inlet Node or NodeList Name
+    ,                         !- Zone Air Exhaust Node or NodeList Name
+    MainZone_AirNode,         !- Zone Air Node Name
+    MainZone_Return;          !- Zone Return Air Node or NodeList Name
+
+ZoneControl:Thermostat,
+    MainZone_Thermostat,      !- Name
+    MainZone,                 !- Zone or ZoneList Name
+    ThermostatType,           !- Control Type Schedule Name
+    ThermostatSetpoint:DualSetpoint,  !- Control 1 Object Type
+    MainZone_DualSetpoint;    !- Control 1 Name
+
+ThermostatSetpoint:DualSetpoint,
+    MainZone_DualSetpoint,    !- Name
+    HeatingSetpoint,          !- Heating Setpoint Temperature Schedule Name
+    CoolingSetpoint;          !- Cooling Setpoint Temperature Schedule Name
+
+!- Output
+Output:Variable,*,Zone Ideal Loads Zone Total Heating Energy,Monthly;
+Output:Variable,*,Zone Ideal Loads Zone Total Cooling Energy,Monthly;
+Output:Meter,Heating:EnergyTransfer,Monthly;
+Output:Meter,Cooling:EnergyTransfer,Monthly;
+OutputControl:Table:Style,Comma,JtoKWH;
+Output:Table:SummaryReports,AllSummary;

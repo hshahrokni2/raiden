@@ -1,0 +1,23 @@
+Program Version,EnergyPlus, Version 25.1.0-68a4a7c774, YMD=2025.12.16 22:19,
+   ** Warning ** Weather file location will be used rather than entered (IDF) Location object.
+   **   ~~~   ** ..Location object=DENVER CENTENNIAL CO USA WMO=724666
+   **   ~~~   ** ..Weather File Location=STOCKHOLM_ ARLANDA - SWE IWEC Data WMO#=024600
+   **   ~~~   ** ..due to location differences, Latitude difference=[19.91] degrees, Longitude difference=[123.13] degrees.
+   **   ~~~   ** ..Time Zone difference=[8.0] hour(s), Elevation difference=[96.60] percent, [1732.00] meters.
+   ** Warning ** SetUpDesignDay: Entered DesignDay Barometric Pressure=81560 differs by more than 10% from Standard Barometric Pressure=100594.
+   **   ~~~   ** ...occurs in DesignDay=DENVER CENTENNIAL ANN HTG 99.6% CONDNS DB, Standard Pressure (based on elevation) will be used.
+   ** Warning ** GetAirPathData: AirLoopHVAC="EVAP COOLER SYSTEM" has no Controllers.
+   ** Warning ** SetUpDesignDay: Entered DesignDay Barometric Pressure=81560 differs by more than 10% from Standard Barometric Pressure=100594.
+   **   ~~~   ** ...occurs in DesignDay=DENVER CENTENNIAL ANN CLG 1% CONDNS DB=>MWB, Standard Pressure (based on elevation) will be used.
+   ************* Testing Individual Branch Integrity
+   ************* All Branches passed integrity testing
+   ************* Testing Individual Supply Air Path Integrity
+   ************* All Supply Air Paths passed integrity testing
+   ************* Testing Individual Return Air Path Integrity
+   ************* All Return Air Paths passed integrity testing
+   ************* No node connection errors were found.
+   ************* Beginning Simulation
+   ************* Simulation Error Summary *************
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Completed Successfully-- 4 Warning; 0 Severe Errors; Elapsed Time=00hr 00min  1.53sec

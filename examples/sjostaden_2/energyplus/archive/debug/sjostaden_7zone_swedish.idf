@@ -1,0 +1,1146 @@
+!- Sjöstaden 2 - 7-Zone Swedish Residential Model
+!- Realistic Swedish building physics per BBR/Sveby standards
+!- Full 8760-hour annual simulation with ventilation + infiltration
+Version,25.1;
+
+Building,
+    Sjostaden_2_Swedish,      !- Name
+    0,                        !- North Axis
+    City,                     !- Terrain
+    0.04,                     !- Loads Convergence Tolerance Value
+    0.4,                      !- Temperature Convergence Tolerance Value
+    FullExterior,             !- Solar Distribution (simplified to avoid geometry warnings)
+    25,                       !- Maximum Number of Warmup Days
+    6;                        !- Minimum Number of Warmup Days
+
+Timestep,4;
+
+SimulationControl,
+    No,                       !- Do Zone Sizing Calculation
+    No,                       !- Do System Sizing Calculation
+    No,                       !- Do Plant Sizing Calculation
+    No,                       !- Run Simulation for Sizing Periods
+    Yes;                      !- Run Simulation for Weather File Run Periods
+
+RunPeriod,
+    Annual,                   !- Name
+    1,                        !- Begin Month
+    1,                        !- Begin Day of Month
+    ,                         !- Begin Year
+    12,                       !- End Month
+    31,                       !- End Day of Month
+    ,                         !- End Year
+    Sunday,                   !- Day of Week for Start Day
+    No,                       !- Use Weather File Holidays and Special Days
+    No,                       !- Use Weather File Daylight Saving Period
+    No,                       !- Apply Weekend Holiday Rule
+    Yes,                      !- Use Weather File Rain Indicators
+    Yes;                      !- Use Weather File Snow Indicators
+
+GlobalGeometryRules,
+    UpperLeftCorner,          !- Starting Vertex Position
+    Counterclockwise,         !- Vertex Entry Direction
+    Relative;                 !- Coordinate System
+
+!- Swedish ground temperatures (colder than default)
+!- Stockholm average soil temps at 2m depth
+Site:GroundTemperature:BuildingSurface,
+    5, 4, 4, 5, 8, 11, 13, 14, 13, 11, 8, 6;
+
+!- Schedule Type Limits
+ScheduleTypeLimits,
+    Fraction,                 !- Name
+    0,                        !- Lower Limit Value
+    1,                        !- Upper Limit Value
+    Continuous,               !- Numeric Type
+    Dimensionless;            !- Unit Type
+
+ScheduleTypeLimits,
+    Temperature,              !- Name
+    -50,                      !- Lower Limit Value
+    50,                       !- Upper Limit Value
+    Continuous,               !- Numeric Type
+    Temperature;              !- Unit Type
+
+ScheduleTypeLimits,
+    Any Number,               !- Name
+    ,                         !- Lower Limit Value
+    ,                         !- Upper Limit Value
+    Continuous;               !- Numeric Type
+
+!- Constant schedules
+Schedule:Constant,AlwaysOn,Fraction,1;
+Schedule:Constant,ActivityLevel,Any Number,120;
+Schedule:Constant,HeatingSetpoint,Temperature,21;
+Schedule:Constant,CoolingSetpoint,Temperature,26;
+Schedule:Constant,ThermostatType,Any Number,4;
+
+!- ============================================================
+!- REALISTIC SWEDISH RESIDENTIAL SCHEDULES (Sveby-based)
+!- Swedish families: both parents typically work
+!- ============================================================
+
+!- Occupancy: Swedish reality - low daytime, high evening/night
+Schedule:Compact,
+    OccupancySchedule,        !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: Weekdays,            !- Field 2
+    Until: 06:00, 0.95,       !- Night - most home sleeping
+    Until: 07:30, 0.70,       !- Morning rush
+    Until: 08:30, 0.30,       !- Leaving for work/school
+    Until: 16:00, 0.15,       !- Daytime - very few home (elderly, WFH, sick)
+    Until: 17:30, 0.40,       !- Coming home from work
+    Until: 22:00, 0.85,       !- Evening - family time
+    Until: 24:00, 0.95,       !- Late night
+    For: Weekends Holidays,   !- Field 9
+    Until: 09:00, 0.95,       !- Weekend morning - sleep in
+    Until: 12:00, 0.70,       !- Late breakfast
+    Until: 18:00, 0.50,       !- Afternoon - some out shopping/activities
+    Until: 22:00, 0.85,       !- Evening
+    Until: 24:00, 0.95;       !- Night
+
+!- Lighting: Swedish LED standard, follows occupancy loosely
+Schedule:Compact,
+    LightingSchedule,         !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: Weekdays,            !- Field 2
+    Until: 06:00, 0.02,       !- Night lights only
+    Until: 07:30, 0.40,       !- Morning
+    Until: 08:30, 0.20,       !- Leaving
+    Until: 16:00, 0.05,       !- Daytime - minimal
+    Until: 17:30, 0.30,       !- Coming home
+    Until: 22:00, 0.60,       !- Evening
+    Until: 24:00, 0.20,       !- Late night
+    For: Weekends Holidays,   !- Field 9
+    Until: 09:00, 0.05,       !- Morning
+    Until: 12:00, 0.20,       !- Late morning
+    Until: 18:00, 0.15,       !- Afternoon
+    Until: 22:00, 0.55,       !- Evening
+    Until: 24:00, 0.15;       !- Night
+
+!- Equipment: Swedish household - fridge always on, cooking peaks
+Schedule:Compact,
+    EquipmentSchedule,        !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,           !- Field 1
+    For: Weekdays,            !- Field 2
+    Until: 06:00, 0.15,       !- Night - fridge, standby only
+    Until: 07:30, 0.45,       !- Morning - coffee, breakfast
+    Until: 08:30, 0.25,       !- Leaving
+    Until: 16:00, 0.15,       !- Daytime - base load only
+    Until: 17:30, 0.35,       !- Coming home
+    Until: 19:00, 0.70,       !- Dinner cooking peak
+    Until: 22:00, 0.50,       !- Evening - TV, computers
+    Until: 24:00, 0.25,       !- Late night
+    For: Weekends Holidays,   !- Field 9
+    Until: 09:00, 0.15,       !- Night
+    Until: 12:00, 0.50,       !- Brunch
+    Until: 18:00, 0.35,       !- Afternoon
+    Until: 20:00, 0.65,       !- Dinner
+    Until: 23:00, 0.45,       !- Evening
+    Until: 24:00, 0.20;       !- Night
+
+!- Infiltration schedule (wind-driven, higher in winter due to stack effect)
+Schedule:Compact,
+    InfiltrationSchedule,     !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 03/31,           !- Winter/Spring
+    For: AllDays,
+    Until: 24:00, 1.0,
+    Through: 05/31,           !- Late spring
+    For: AllDays,
+    Until: 24:00, 0.7,
+    Through: 08/31,           !- Summer
+    For: AllDays,
+    Until: 24:00, 0.5,
+    Through: 10/31,           !- Fall
+    For: AllDays,
+    Until: 24:00, 0.7,
+    Through: 12/31,           !- Late fall/winter
+    For: AllDays,
+    Until: 24:00, 1.0;
+
+!- Ventilation schedule (FTX runs 24/7 but reduced at night per Swedish practice)
+Schedule:Compact,
+    VentilationSchedule,      !- Name
+    Fraction,                 !- Schedule Type Limits Name
+    Through: 12/31,
+    For: AllDays,
+    Until: 06:00, 0.7,        !- Night - reduced flow
+    Until: 22:00, 1.0,        !- Day - full flow
+    Until: 24:00, 0.8;        !- Evening - slightly reduced
+
+!- ============================================================
+!- MATERIALS (Sjöstaden 2003 eco-district quality)
+!- Back-calculated U-values from measured 33 kWh/m²/year
+!- ============================================================
+
+Material,
+    Concrete200,              !- Name
+    MediumRough,              !- Roughness
+    0.2,                      !- Thickness (m)
+    1.7,                      !- Conductivity (W/m-K)
+    2300,                     !- Density (kg/m3)
+    900;                      !- Specific Heat (J/kg-K)
+
+Material,
+    Concrete150,              !- Name
+    MediumRough,              !- Roughness
+    0.15,                     !- Thickness (m)
+    1.7,                      !- Conductivity (W/m-K)
+    2300,                     !- Density (kg/m3)
+    900;                      !- Specific Heat (J/kg-K)
+
+Material,
+    WallInsulation,           !- Name
+    MediumRough,              !- Roughness
+    0.28,                     !- Thickness → U=0.11 W/m²K
+    0.035,                    !- Conductivity (mineral wool)
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Material,
+    RoofInsulation,           !- Name
+    MediumRough,              !- Roughness
+    0.40,                     !- Thickness → U=0.08 W/m²K
+    0.035,                    !- Conductivity
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Material,
+    FloorInsulation,          !- Name
+    MediumRough,              !- Roughness
+    0.15,                     !- Thickness (ground floor)
+    0.035,                    !- Conductivity
+    30,                       !- Density
+    840;                      !- Specific Heat
+
+Construction,
+    ExteriorWall,             !- Name
+    Concrete200,              !- Outside Layer
+    WallInsulation;           !- Inside Layer
+
+Construction,
+    Roof,                     !- Name
+    Concrete200,              !- Outside Layer
+    RoofInsulation;           !- Inside Layer
+
+Construction,
+    GroundFloor,              !- Name
+    Concrete200,              !- Outside Layer
+    FloorInsulation;          !- Inside Layer
+
+Construction,
+    InteriorFloor,            !- Name
+    Concrete150;              !- Single layer (thermal mass)
+
+!- Triple glazing (U=0.8 from back-calculation, typical 2003 eco-district)
+WindowMaterial:SimpleGlazingSystem,
+    TripleGlazing,            !- Name
+    0.8,                      !- U-Factor (W/m²K)
+    0.5,                      !- Solar Heat Gain Coefficient
+    0.65;                     !- Visible Transmittance
+
+Construction,
+    WindowConstruction,       !- Name
+    TripleGlazing;            !- Outside Layer
+
+!- ============================================================
+!- ZONE DEFINITIONS (7 floors, 320 m² each)
+!- ============================================================
+
+Zone,
+    Floor1,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 0,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume (320 m² x 3m)
+
+Zone,
+    Floor2,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 3,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor3,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 6,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor4,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 9,                  !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor5,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 12,                 !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor6,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 15,                 !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+Zone,
+    Floor7,                   !- Name
+    0,                        !- Direction of Relative North
+    0, 0, 18,                 !- X,Y,Z Origin
+    1,                        !- Type
+    1,                        !- Multiplier
+    3,                        !- Ceiling Height (m)
+    960;                      !- Volume
+
+!- ============================================================
+!- FLOOR 1 SURFACES (Ground floor)
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor1_Floor,             !- Name
+    Floor,                    !- Surface Type
+    GroundFloor,              !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Ground,                   !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 0,
+    0, 16, 0,
+    20, 16, 0,
+    20, 0, 0;
+
+BuildingSurface:Detailed,
+    Floor1_Ceiling,           !- Name
+    Ceiling,                  !- Surface Type
+    InteriorFloor,            !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Surface,                  !- Outside Boundary Condition
+    Floor2_Floor,             !- Outside Boundary Condition Object
+    NoSun,                    !- Sun Exposure
+    NoWind,                   !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 3,
+    20, 16, 3,
+    0, 16, 3,
+    0, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallNorth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 16, 3,
+    0, 16, 0,
+    20, 16, 0,
+    20, 16, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallSouth,         !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 3,
+    20, 0, 0,
+    0, 0, 0,
+    0, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallEast,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 16, 3,
+    20, 16, 0,
+    20, 0, 0,
+    20, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor1_WallWest,          !- Name
+    Wall,                     !- Surface Type
+    ExteriorWall,             !- Construction Name
+    Floor1,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0.5,                      !- View Factor to Ground
+    4,                        !- Number of Vertices
+    0, 0, 3,
+    0, 0, 0,
+    0, 16, 0,
+    0, 16, 3;
+
+!- Floor 1 Windows (WWR ~17%)
+FenestrationSurface:Detailed,
+    Floor1_WinSouth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallSouth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    16, 0, 2.5,
+    16, 0, 0.8,
+    4, 0, 0.8,
+    4, 0, 2.5;
+
+FenestrationSurface:Detailed,
+    Floor1_WinNorth,          !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallNorth,         !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    4, 16, 2.5,
+    4, 16, 0.8,
+    16, 16, 0.8,
+    16, 16, 2.5;
+
+FenestrationSurface:Detailed,
+    Floor1_WinEast,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallEast,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    20, 12, 2.5,
+    20, 12, 0.8,
+    20, 4, 0.8,
+    20, 4, 2.5;
+
+FenestrationSurface:Detailed,
+    Floor1_WinWest,           !- Name
+    Window,                   !- Surface Type
+    WindowConstruction,       !- Construction Name
+    Floor1_WallWest,          !- Building Surface Name
+    ,                         !- Outside Boundary Condition Object
+    0.5,                      !- View Factor to Ground
+    ,                         !- Frame and Divider Name
+    1,                        !- Multiplier
+    4,                        !- Number of Vertices
+    0, 4, 2.5,
+    0, 4, 0.8,
+    0, 12, 0.8,
+    0, 12, 2.5;
+
+!- ============================================================
+!- FLOORS 2-6 (Middle floors - using multiplier concept inline)
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor2_Floor, Floor, InteriorFloor, Floor2, , Surface, Floor1_Ceiling, NoSun, NoWind, 0, 4,
+    0, 0, 3, 0, 16, 3, 20, 16, 3, 20, 0, 3;
+
+BuildingSurface:Detailed,
+    Floor2_Ceiling, Ceiling, InteriorFloor, Floor2, , Surface, Floor3_Floor, NoSun, NoWind, 0, 4,
+    20, 0, 6, 20, 16, 6, 0, 16, 6, 0, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallNorth, Wall, ExteriorWall, Floor2, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 16, 6, 0, 16, 3, 20, 16, 3, 20, 16, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallSouth, Wall, ExteriorWall, Floor2, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 0, 6, 20, 0, 3, 0, 0, 3, 0, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallEast, Wall, ExteriorWall, Floor2, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 16, 6, 20, 16, 3, 20, 0, 3, 20, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor2_WallWest, Wall, ExteriorWall, Floor2, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 0, 6, 0, 0, 3, 0, 16, 3, 0, 16, 6;
+
+FenestrationSurface:Detailed,
+    Floor2_WinSouth, Window, WindowConstruction, Floor2_WallSouth, , 0.5, , 1, 4,
+    16, 0, 5.5, 16, 0, 3.8, 4, 0, 3.8, 4, 0, 5.5;
+
+FenestrationSurface:Detailed,
+    Floor2_WinNorth, Window, WindowConstruction, Floor2_WallNorth, , 0.5, , 1, 4,
+    4, 16, 5.5, 4, 16, 3.8, 16, 16, 3.8, 16, 16, 5.5;
+
+FenestrationSurface:Detailed,
+    Floor2_WinEast, Window, WindowConstruction, Floor2_WallEast, , 0.5, , 1, 4,
+    20, 12, 5.5, 20, 12, 3.8, 20, 4, 3.8, 20, 4, 5.5;
+
+FenestrationSurface:Detailed,
+    Floor2_WinWest, Window, WindowConstruction, Floor2_WallWest, , 0.5, , 1, 4,
+    0, 4, 5.5, 0, 4, 3.8, 0, 12, 3.8, 0, 12, 5.5;
+
+!- Floor 3
+BuildingSurface:Detailed,
+    Floor3_Floor, Floor, InteriorFloor, Floor3, , Surface, Floor2_Ceiling, NoSun, NoWind, 0, 4,
+    0, 0, 6, 0, 16, 6, 20, 16, 6, 20, 0, 6;
+
+BuildingSurface:Detailed,
+    Floor3_Ceiling, Ceiling, InteriorFloor, Floor3, , Surface, Floor4_Floor, NoSun, NoWind, 0, 4,
+    20, 0, 9, 20, 16, 9, 0, 16, 9, 0, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallNorth, Wall, ExteriorWall, Floor3, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 16, 9, 0, 16, 6, 20, 16, 6, 20, 16, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallSouth, Wall, ExteriorWall, Floor3, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 0, 9, 20, 0, 6, 0, 0, 6, 0, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallEast, Wall, ExteriorWall, Floor3, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 16, 9, 20, 16, 6, 20, 0, 6, 20, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor3_WallWest, Wall, ExteriorWall, Floor3, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 0, 9, 0, 0, 6, 0, 16, 6, 0, 16, 9;
+
+FenestrationSurface:Detailed,
+    Floor3_WinSouth, Window, WindowConstruction, Floor3_WallSouth, , 0.5, , 1, 4,
+    16, 0, 8.5, 16, 0, 6.8, 4, 0, 6.8, 4, 0, 8.5;
+
+FenestrationSurface:Detailed,
+    Floor3_WinNorth, Window, WindowConstruction, Floor3_WallNorth, , 0.5, , 1, 4,
+    4, 16, 8.5, 4, 16, 6.8, 16, 16, 6.8, 16, 16, 8.5;
+
+FenestrationSurface:Detailed,
+    Floor3_WinEast, Window, WindowConstruction, Floor3_WallEast, , 0.5, , 1, 4,
+    20, 12, 8.5, 20, 12, 6.8, 20, 4, 6.8, 20, 4, 8.5;
+
+FenestrationSurface:Detailed,
+    Floor3_WinWest, Window, WindowConstruction, Floor3_WallWest, , 0.5, , 1, 4,
+    0, 4, 8.5, 0, 4, 6.8, 0, 12, 6.8, 0, 12, 8.5;
+
+!- Floor 4
+BuildingSurface:Detailed,
+    Floor4_Floor, Floor, InteriorFloor, Floor4, , Surface, Floor3_Ceiling, NoSun, NoWind, 0, 4,
+    0, 0, 9, 0, 16, 9, 20, 16, 9, 20, 0, 9;
+
+BuildingSurface:Detailed,
+    Floor4_Ceiling, Ceiling, InteriorFloor, Floor4, , Surface, Floor5_Floor, NoSun, NoWind, 0, 4,
+    20, 0, 12, 20, 16, 12, 0, 16, 12, 0, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallNorth, Wall, ExteriorWall, Floor4, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 16, 12, 0, 16, 9, 20, 16, 9, 20, 16, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallSouth, Wall, ExteriorWall, Floor4, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 0, 12, 20, 0, 9, 0, 0, 9, 0, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallEast, Wall, ExteriorWall, Floor4, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 16, 12, 20, 16, 9, 20, 0, 9, 20, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor4_WallWest, Wall, ExteriorWall, Floor4, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 0, 12, 0, 0, 9, 0, 16, 9, 0, 16, 12;
+
+FenestrationSurface:Detailed,
+    Floor4_WinSouth, Window, WindowConstruction, Floor4_WallSouth, , 0.5, , 1, 4,
+    16, 0, 11.5, 16, 0, 9.8, 4, 0, 9.8, 4, 0, 11.5;
+
+FenestrationSurface:Detailed,
+    Floor4_WinNorth, Window, WindowConstruction, Floor4_WallNorth, , 0.5, , 1, 4,
+    4, 16, 11.5, 4, 16, 9.8, 16, 16, 9.8, 16, 16, 11.5;
+
+FenestrationSurface:Detailed,
+    Floor4_WinEast, Window, WindowConstruction, Floor4_WallEast, , 0.5, , 1, 4,
+    20, 12, 11.5, 20, 12, 9.8, 20, 4, 9.8, 20, 4, 11.5;
+
+FenestrationSurface:Detailed,
+    Floor4_WinWest, Window, WindowConstruction, Floor4_WallWest, , 0.5, , 1, 4,
+    0, 4, 11.5, 0, 4, 9.8, 0, 12, 9.8, 0, 12, 11.5;
+
+!- Floor 5
+BuildingSurface:Detailed,
+    Floor5_Floor, Floor, InteriorFloor, Floor5, , Surface, Floor4_Ceiling, NoSun, NoWind, 0, 4,
+    0, 0, 12, 0, 16, 12, 20, 16, 12, 20, 0, 12;
+
+BuildingSurface:Detailed,
+    Floor5_Ceiling, Ceiling, InteriorFloor, Floor5, , Surface, Floor6_Floor, NoSun, NoWind, 0, 4,
+    20, 0, 15, 20, 16, 15, 0, 16, 15, 0, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallNorth, Wall, ExteriorWall, Floor5, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 16, 15, 0, 16, 12, 20, 16, 12, 20, 16, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallSouth, Wall, ExteriorWall, Floor5, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 0, 15, 20, 0, 12, 0, 0, 12, 0, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallEast, Wall, ExteriorWall, Floor5, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 16, 15, 20, 16, 12, 20, 0, 12, 20, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor5_WallWest, Wall, ExteriorWall, Floor5, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 0, 15, 0, 0, 12, 0, 16, 12, 0, 16, 15;
+
+FenestrationSurface:Detailed,
+    Floor5_WinSouth, Window, WindowConstruction, Floor5_WallSouth, , 0.5, , 1, 4,
+    16, 0, 14.5, 16, 0, 12.8, 4, 0, 12.8, 4, 0, 14.5;
+
+FenestrationSurface:Detailed,
+    Floor5_WinNorth, Window, WindowConstruction, Floor5_WallNorth, , 0.5, , 1, 4,
+    4, 16, 14.5, 4, 16, 12.8, 16, 16, 12.8, 16, 16, 14.5;
+
+FenestrationSurface:Detailed,
+    Floor5_WinEast, Window, WindowConstruction, Floor5_WallEast, , 0.5, , 1, 4,
+    20, 12, 14.5, 20, 12, 12.8, 20, 4, 12.8, 20, 4, 14.5;
+
+FenestrationSurface:Detailed,
+    Floor5_WinWest, Window, WindowConstruction, Floor5_WallWest, , 0.5, , 1, 4,
+    0, 4, 14.5, 0, 4, 12.8, 0, 12, 12.8, 0, 12, 14.5;
+
+!- Floor 6
+BuildingSurface:Detailed,
+    Floor6_Floor, Floor, InteriorFloor, Floor6, , Surface, Floor5_Ceiling, NoSun, NoWind, 0, 4,
+    0, 0, 15, 0, 16, 15, 20, 16, 15, 20, 0, 15;
+
+BuildingSurface:Detailed,
+    Floor6_Ceiling, Ceiling, InteriorFloor, Floor6, , Surface, Floor7_Floor, NoSun, NoWind, 0, 4,
+    20, 0, 18, 20, 16, 18, 0, 16, 18, 0, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallNorth, Wall, ExteriorWall, Floor6, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 16, 18, 0, 16, 15, 20, 16, 15, 20, 16, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallSouth, Wall, ExteriorWall, Floor6, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 0, 18, 20, 0, 15, 0, 0, 15, 0, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallEast, Wall, ExteriorWall, Floor6, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 16, 18, 20, 16, 15, 20, 0, 15, 20, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor6_WallWest, Wall, ExteriorWall, Floor6, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 0, 18, 0, 0, 15, 0, 16, 15, 0, 16, 18;
+
+FenestrationSurface:Detailed,
+    Floor6_WinSouth, Window, WindowConstruction, Floor6_WallSouth, , 0.5, , 1, 4,
+    16, 0, 17.5, 16, 0, 15.8, 4, 0, 15.8, 4, 0, 17.5;
+
+FenestrationSurface:Detailed,
+    Floor6_WinNorth, Window, WindowConstruction, Floor6_WallNorth, , 0.5, , 1, 4,
+    4, 16, 17.5, 4, 16, 15.8, 16, 16, 15.8, 16, 16, 17.5;
+
+FenestrationSurface:Detailed,
+    Floor6_WinEast, Window, WindowConstruction, Floor6_WallEast, , 0.5, , 1, 4,
+    20, 12, 17.5, 20, 12, 15.8, 20, 4, 15.8, 20, 4, 17.5;
+
+FenestrationSurface:Detailed,
+    Floor6_WinWest, Window, WindowConstruction, Floor6_WallWest, , 0.5, , 1, 4,
+    0, 4, 17.5, 0, 4, 15.8, 0, 12, 15.8, 0, 12, 17.5;
+
+!- ============================================================
+!- FLOOR 7 (Top floor - roof exposure)
+!- ============================================================
+
+BuildingSurface:Detailed,
+    Floor7_Floor, Floor, InteriorFloor, Floor7, , Surface, Floor6_Ceiling, NoSun, NoWind, 0, 4,
+    0, 0, 18, 0, 16, 18, 20, 16, 18, 20, 0, 18;
+
+BuildingSurface:Detailed,
+    Floor7_Roof,              !- Name
+    Roof,                     !- Surface Type
+    Roof,                     !- Construction Name
+    Floor7,                   !- Zone Name
+    ,                         !- Space Name
+    Outdoors,                 !- Outside Boundary Condition
+    ,                         !- Outside Boundary Condition Object
+    SunExposed,               !- Sun Exposure
+    WindExposed,              !- Wind Exposure
+    0,                        !- View Factor to Ground
+    4,                        !- Number of Vertices
+    20, 0, 21,
+    20, 16, 21,
+    0, 16, 21,
+    0, 0, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallNorth, Wall, ExteriorWall, Floor7, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 16, 21, 0, 16, 18, 20, 16, 18, 20, 16, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallSouth, Wall, ExteriorWall, Floor7, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 0, 21, 20, 0, 18, 0, 0, 18, 0, 0, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallEast, Wall, ExteriorWall, Floor7, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    20, 16, 21, 20, 16, 18, 20, 0, 18, 20, 0, 21;
+
+BuildingSurface:Detailed,
+    Floor7_WallWest, Wall, ExteriorWall, Floor7, , Outdoors, , SunExposed, WindExposed, 0.5, 4,
+    0, 0, 21, 0, 0, 18, 0, 16, 18, 0, 16, 21;
+
+FenestrationSurface:Detailed,
+    Floor7_WinSouth, Window, WindowConstruction, Floor7_WallSouth, , 0.5, , 1, 4,
+    16, 0, 20.5, 16, 0, 18.8, 4, 0, 18.8, 4, 0, 20.5;
+
+FenestrationSurface:Detailed,
+    Floor7_WinNorth, Window, WindowConstruction, Floor7_WallNorth, , 0.5, , 1, 4,
+    4, 16, 20.5, 4, 16, 18.8, 16, 16, 18.8, 16, 16, 20.5;
+
+FenestrationSurface:Detailed,
+    Floor7_WinEast, Window, WindowConstruction, Floor7_WallEast, , 0.5, , 1, 4,
+    20, 12, 20.5, 20, 12, 18.8, 20, 4, 18.8, 20, 4, 20.5;
+
+FenestrationSurface:Detailed,
+    Floor7_WinWest, Window, WindowConstruction, Floor7_WallWest, , 0.5, , 1, 4,
+    0, 4, 20.5, 0, 4, 18.8, 0, 12, 18.8, 0, 12, 20.5;
+
+!- ============================================================
+!- INTERNAL LOADS (Realistic Swedish Sveby values)
+!- Reduced from previous unrealistic values
+!- ============================================================
+
+!- PEOPLE: 73 total → ~10/floor, but now with realistic schedules
+!- Sveby: ~1 person per 40m² presence average
+People, Floor1_People, Floor1, OccupancySchedule, People, 10, , , 0.3, autocalculate, ActivityLevel;
+People, Floor2_People, Floor2, OccupancySchedule, People, 10, , , 0.3, autocalculate, ActivityLevel;
+People, Floor3_People, Floor3, OccupancySchedule, People, 10, , , 0.3, autocalculate, ActivityLevel;
+People, Floor4_People, Floor4, OccupancySchedule, People, 11, , , 0.3, autocalculate, ActivityLevel;
+People, Floor5_People, Floor5, OccupancySchedule, People, 11, , , 0.3, autocalculate, ActivityLevel;
+People, Floor6_People, Floor6, OccupancySchedule, People, 11, , , 0.3, autocalculate, ActivityLevel;
+People, Floor7_People, Floor7, OccupancySchedule, People, 10, , , 0.3, autocalculate, ActivityLevel;
+
+!- LIGHTING: 4 W/m² (Swedish LED standard, reduced from 8)
+Lights, Floor1_Lights, Floor1, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+Lights, Floor2_Lights, Floor2, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+Lights, Floor3_Lights, Floor3, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+Lights, Floor4_Lights, Floor4, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+Lights, Floor5_Lights, Floor5, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+Lights, Floor6_Lights, Floor6, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+Lights, Floor7_Lights, Floor7, LightingSchedule, Watts/Area, , 4, , 0, 0.4, 0.2;
+
+!- EQUIPMENT: 6 W/m² (Swedish household, reduced from 12)
+!- Accounts for efficient appliances in 2003 eco-district
+ElectricEquipment, Floor1_Equipment, Floor1, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+ElectricEquipment, Floor2_Equipment, Floor2, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+ElectricEquipment, Floor3_Equipment, Floor3, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+ElectricEquipment, Floor4_Equipment, Floor4, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+ElectricEquipment, Floor5_Equipment, Floor5, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+ElectricEquipment, Floor6_Equipment, Floor6, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+ElectricEquipment, Floor7_Equipment, Floor7, EquipmentSchedule, Watts/Area, , 6, , 0, 0.3, 0;
+
+!- ============================================================
+!- INFILTRATION (Swedish airtight construction)
+!- Eco-district 2003: ~0.3 l/s/m² @ 50Pa → ~0.06 ACH natural
+!- Using flow per exterior surface area method
+!- ============================================================
+
+ZoneInfiltration:DesignFlowRate,
+    Floor1_Infiltration,      !- Name
+    Floor1,                   !- Zone Name
+    InfiltrationSchedule,     !- Schedule Name
+    Flow/ExteriorArea,        !- Design Flow Rate Calculation Method
+    ,                         !- Design Flow Rate
+    ,                         !- Flow per Zone Floor Area
+    0.0003,                   !- Flow per Exterior Surface Area (m³/s/m²) - very tight
+    ,                         !- Air Changes per Hour
+    1,                        !- Constant Term Coefficient
+    0,                        !- Temperature Term Coefficient
+    0.224,                    !- Velocity Term Coefficient (wind effect)
+    0;                        !- Velocity Squared Term Coefficient
+
+ZoneInfiltration:DesignFlowRate,
+    Floor2_Infiltration, Floor2, InfiltrationSchedule, Flow/ExteriorArea, , , 0.0003, , 1, 0, 0.224, 0;
+
+ZoneInfiltration:DesignFlowRate,
+    Floor3_Infiltration, Floor3, InfiltrationSchedule, Flow/ExteriorArea, , , 0.0003, , 1, 0, 0.224, 0;
+
+ZoneInfiltration:DesignFlowRate,
+    Floor4_Infiltration, Floor4, InfiltrationSchedule, Flow/ExteriorArea, , , 0.0003, , 1, 0, 0.224, 0;
+
+ZoneInfiltration:DesignFlowRate,
+    Floor5_Infiltration, Floor5, InfiltrationSchedule, Flow/ExteriorArea, , , 0.0003, , 1, 0, 0.224, 0;
+
+ZoneInfiltration:DesignFlowRate,
+    Floor6_Infiltration, Floor6, InfiltrationSchedule, Flow/ExteriorArea, , , 0.0003, , 1, 0, 0.224, 0;
+
+!- Top floor has extra infiltration (stack effect + wind)
+ZoneInfiltration:DesignFlowRate,
+    Floor7_Infiltration, Floor7, InfiltrationSchedule, Flow/ExteriorArea, , , 0.0004, , 1, 0, 0.224, 0;
+
+!- ============================================================
+!- MECHANICAL VENTILATION (Swedish FTX with heat recovery)
+!- BBR requirement: 0.35 l/s/m² minimum outdoor air
+!- FTX system with 80% sensible heat recovery
+!- ============================================================
+
+ZoneVentilation:DesignFlowRate,
+    Floor1_Ventilation,       !- Name
+    Floor1,                   !- Zone Name
+    VentilationSchedule,      !- Schedule Name
+    Flow/Area,                !- Design Flow Rate Calculation Method
+    ,                         !- Design Flow Rate
+    0.00035,                  !- Flow per Zone Floor Area (m³/s/m² = 0.35 l/s/m²)
+    ,                         !- Flow per Person
+    ,                         !- Air Changes per Hour
+    Intake,                   !- Ventilation Type (supply air from FTX)
+    0,                        !- Fan Pressure Rise (not modeled explicitly)
+    1,                        !- Fan Total Efficiency
+    1,                        !- Constant Term Coefficient
+    0,                        !- Temperature Term Coefficient
+    0,                        !- Velocity Term Coefficient
+    0,                        !- Velocity Squared Term Coefficient
+    -100,                     !- Minimum Indoor Temperature (always ventilate)
+    ,                         !- Minimum Indoor Temperature Schedule Name
+    100,                      !- Maximum Indoor Temperature
+    ,                         !- Maximum Indoor Temperature Schedule Name
+    -100,                     !- Delta Temperature (no outdoor temp limit)
+    ,                         !- Delta Temperature Schedule Name
+    -100,                     !- Minimum Outdoor Temperature
+    ,                         !- Minimum Outdoor Temperature Schedule Name
+    100,                      !- Maximum Outdoor Temperature
+    ,                         !- Maximum Outdoor Temperature Schedule Name
+    1;                        !- Maximum Wind Speed
+
+ZoneVentilation:DesignFlowRate,
+    Floor2_Ventilation, Floor2, VentilationSchedule, Flow/Area, , 0.00035, , , Intake, 0, 1, 1, 0, 0, 0, -100, , 100, , -100, , -100, , 100, , 1;
+
+ZoneVentilation:DesignFlowRate,
+    Floor3_Ventilation, Floor3, VentilationSchedule, Flow/Area, , 0.00035, , , Intake, 0, 1, 1, 0, 0, 0, -100, , 100, , -100, , -100, , 100, , 1;
+
+ZoneVentilation:DesignFlowRate,
+    Floor4_Ventilation, Floor4, VentilationSchedule, Flow/Area, , 0.00035, , , Intake, 0, 1, 1, 0, 0, 0, -100, , 100, , -100, , -100, , 100, , 1;
+
+ZoneVentilation:DesignFlowRate,
+    Floor5_Ventilation, Floor5, VentilationSchedule, Flow/Area, , 0.00035, , , Intake, 0, 1, 1, 0, 0, 0, -100, , 100, , -100, , -100, , 100, , 1;
+
+ZoneVentilation:DesignFlowRate,
+    Floor6_Ventilation, Floor6, VentilationSchedule, Flow/Area, , 0.00035, , , Intake, 0, 1, 1, 0, 0, 0, -100, , 100, , -100, , -100, , 100, , 1;
+
+ZoneVentilation:DesignFlowRate,
+    Floor7_Ventilation, Floor7, VentilationSchedule, Flow/Area, , 0.00035, , , Intake, 0, 1, 1, 0, 0, 0, -100, , 100, , -100, , -100, , 100, , 1;
+
+!- ============================================================
+!- HEAT RECOVERY VENTILATION (FTX system modeling)
+!- Using ZoneAirHeatBalanceAlgorithm for better air modeling
+!- Heat recovery handled by adjusting IdealLoads
+!- ============================================================
+
+ZoneAirHeatBalanceAlgorithm,
+    ThirdOrderBackwardDifference;  !- Algorithm
+
+!- ============================================================
+!- HVAC - IdealLoadsAirSystem per zone
+!- Represents ground source + exhaust air heat pump system
+!- ============================================================
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor1_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor1_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type (FTX system!)
+    0.80,                     !- Sensible Heat Recovery Effectiveness (80% typical FTX)
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor2_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor2_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type
+    0.80,                     !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor3_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor3_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type
+    0.80,                     !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor4_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor4_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type
+    0.80,                     !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor5_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor5_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type
+    0.80,                     !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor6_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor6_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type
+    0.80,                     !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+ZoneHVAC:IdealLoadsAirSystem,
+    Floor7_IdealLoads,        !- Name
+    AlwaysOn,                 !- Availability Schedule Name
+    Floor7_Supply,            !- Zone Supply Air Node Name
+    ,                         !- Zone Exhaust Air Node Name
+    ,                         !- System Inlet Air Node Name
+    50,                       !- Maximum Heating Supply Air Temperature
+    13,                       !- Minimum Cooling Supply Air Temperature
+    0.0156,                   !- Maximum Heating Supply Air Humidity Ratio
+    0.0077,                   !- Minimum Cooling Supply Air Humidity Ratio
+    NoLimit,                  !- Heating Limit
+    ,                         !- Maximum Heating Air Flow Rate
+    ,                         !- Maximum Sensible Heating Capacity
+    NoLimit,                  !- Cooling Limit
+    ,                         !- Maximum Cooling Air Flow Rate
+    ,                         !- Maximum Total Cooling Capacity
+    ,                         !- Heating Availability Schedule Name
+    ,                         !- Cooling Availability Schedule Name
+    None,                     !- Dehumidification Control Type
+    0.7,                      !- Cooling Sensible Heat Ratio
+    None,                     !- Humidification Control Type
+    ,                         !- Design Specification Outdoor Air Object Name
+    ,                         !- Outdoor Air Inlet Node Name
+    None,                     !- Demand Controlled Ventilation Type
+    NoEconomizer,             !- Outdoor Air Economizer Type
+    Sensible,                 !- Heat Recovery Type
+    0.80,                     !- Sensible Heat Recovery Effectiveness
+    0.65;                     !- Latent Heat Recovery Effectiveness
+
+!- Equipment Lists
+ZoneHVAC:EquipmentList, Floor1_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor1_IdealLoads, 1, 1;
+ZoneHVAC:EquipmentList, Floor2_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor2_IdealLoads, 1, 1;
+ZoneHVAC:EquipmentList, Floor3_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor3_IdealLoads, 1, 1;
+ZoneHVAC:EquipmentList, Floor4_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor4_IdealLoads, 1, 1;
+ZoneHVAC:EquipmentList, Floor5_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor5_IdealLoads, 1, 1;
+ZoneHVAC:EquipmentList, Floor6_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor6_IdealLoads, 1, 1;
+ZoneHVAC:EquipmentList, Floor7_EquipList, SequentialLoad, ZoneHVAC:IdealLoadsAirSystem, Floor7_IdealLoads, 1, 1;
+
+!- Equipment Connections
+ZoneHVAC:EquipmentConnections, Floor1, Floor1_EquipList, Floor1_Supply, , Floor1_AirNode, Floor1_Return;
+ZoneHVAC:EquipmentConnections, Floor2, Floor2_EquipList, Floor2_Supply, , Floor2_AirNode, Floor2_Return;
+ZoneHVAC:EquipmentConnections, Floor3, Floor3_EquipList, Floor3_Supply, , Floor3_AirNode, Floor3_Return;
+ZoneHVAC:EquipmentConnections, Floor4, Floor4_EquipList, Floor4_Supply, , Floor4_AirNode, Floor4_Return;
+ZoneHVAC:EquipmentConnections, Floor5, Floor5_EquipList, Floor5_Supply, , Floor5_AirNode, Floor5_Return;
+ZoneHVAC:EquipmentConnections, Floor6, Floor6_EquipList, Floor6_Supply, , Floor6_AirNode, Floor6_Return;
+ZoneHVAC:EquipmentConnections, Floor7, Floor7_EquipList, Floor7_Supply, , Floor7_AirNode, Floor7_Return;
+
+!- Thermostats
+ZoneControl:Thermostat, Floor1_Thermostat, Floor1, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor1_DualSetpoint;
+ZoneControl:Thermostat, Floor2_Thermostat, Floor2, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor2_DualSetpoint;
+ZoneControl:Thermostat, Floor3_Thermostat, Floor3, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor3_DualSetpoint;
+ZoneControl:Thermostat, Floor4_Thermostat, Floor4, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor4_DualSetpoint;
+ZoneControl:Thermostat, Floor5_Thermostat, Floor5, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor5_DualSetpoint;
+ZoneControl:Thermostat, Floor6_Thermostat, Floor6, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor6_DualSetpoint;
+ZoneControl:Thermostat, Floor7_Thermostat, Floor7, ThermostatType, ThermostatSetpoint:DualSetpoint, Floor7_DualSetpoint;
+
+ThermostatSetpoint:DualSetpoint, Floor1_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+ThermostatSetpoint:DualSetpoint, Floor2_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+ThermostatSetpoint:DualSetpoint, Floor3_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+ThermostatSetpoint:DualSetpoint, Floor4_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+ThermostatSetpoint:DualSetpoint, Floor5_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+ThermostatSetpoint:DualSetpoint, Floor6_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+ThermostatSetpoint:DualSetpoint, Floor7_DualSetpoint, HeatingSetpoint, CoolingSetpoint;
+
+!- ============================================================
+!- OUTPUT - Hourly for full 8760 analysis
+!- ============================================================
+
+Output:Variable,*,Zone Ideal Loads Zone Total Heating Energy,Hourly;
+Output:Variable,*,Zone Ideal Loads Zone Total Cooling Energy,Hourly;
+Output:Variable,*,Zone Mean Air Temperature,Hourly;
+Output:Variable,*,Zone Infiltration Sensible Heat Loss Energy,Hourly;
+Output:Variable,*,Zone Infiltration Sensible Heat Gain Energy,Hourly;
+Output:Variable,*,Zone Ventilation Sensible Heat Loss Energy,Hourly;
+Output:Variable,*,Zone Ventilation Sensible Heat Gain Energy,Hourly;
+
+Output:Meter,Heating:EnergyTransfer,Hourly;
+Output:Meter,Cooling:EnergyTransfer,Hourly;
+Output:Meter,InteriorLights:Electricity,Hourly;
+Output:Meter,InteriorEquipment:Electricity,Hourly;
+
+OutputControl:Table:Style,Comma,JtoKWH;
+Output:Table:SummaryReports,
+    AllSummary,
+    ZoneComponentLoadSummary;

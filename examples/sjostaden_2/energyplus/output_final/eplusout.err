@@ -1,0 +1,62 @@
+Program Version,EnergyPlus, Version 25.1.0-68a4a7c774, YMD=2025.12.16 22:40,
+   ** Warning ** Site:GroundTemperature:BuildingSurface: Some values fall outside the range of 15-25C.
+   **   ~~~   ** These values may be inappropriate.  Please consult the Input Output Reference for more details.
+   ** Warning ** Weather file location will be used rather than entered (IDF) Location object.
+   **   ~~~   ** ..Location object=STOCKHOLM
+   **   ~~~   ** ..Weather File Location=STOCKHOLM_ ARLANDA - SWE IWEC Data WMO#=024600
+   **   ~~~   ** ..due to location differences, Latitude difference=[0.30] degrees, Longitude difference=[0.00] degrees.
+   **   ~~~   ** ..Time Zone difference=[0.0] hour(s), Elevation difference=[38.64] percent, [17.00] meters.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR1_FLOOR", in Zone="FLOOR1".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR1_CEILING", in Zone="FLOOR1".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR2_FLOOR", in Zone="FLOOR2".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR2_CEILING", in Zone="FLOOR2".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR3_FLOOR", in Zone="FLOOR3".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR3_CEILING", in Zone="FLOOR3".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR4_FLOOR", in Zone="FLOOR4".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR4_CEILING", in Zone="FLOOR4".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR5_FLOOR", in Zone="FLOOR5".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR5_CEILING", in Zone="FLOOR5".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR6_FLOOR", in Zone="FLOOR6".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR6_CEILING", in Zone="FLOOR6".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Floor is upside down! Tilt angle=[0.0], should be near 180, Surface="FLOOR7_FLOOR", in Zone="FLOOR7".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** GetVertices: Roof/Ceiling is upside down! Tilt angle=[180.0], should be near 0, Surface="FLOOR7_CEILING", in Zone="FLOOR7".
+   **   ~~~   ** Automatic fix is attempted.
+   ** Warning ** For zone=FLOOR1 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ** Warning ** For zone=FLOOR2 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ** Warning ** For zone=FLOOR3 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ** Warning ** For zone=FLOOR4 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ** Warning ** For zone=FLOOR5 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ** Warning ** For zone=FLOOR6 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ** Warning ** For zone=FLOOR7 return air heat gain from lights will be applied to the zone air.
+   **   ~~~   **   This zone has no return air or is served by an on/off HVAC system.
+   ************* Testing Individual Branch Integrity
+   ************* All Branches passed integrity testing
+   ************* Testing Individual Supply Air Path Integrity
+   ************* All Supply Air Paths passed integrity testing
+   ************* Testing Individual Return Air Path Integrity
+   ************* All Return Air Paths passed integrity testing
+   ************* No node connection errors were found.
+   ************* Beginning Simulation
+   ************* Simulation Error Summary *************
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Completed Successfully-- 23 Warning; 0 Severe Errors; Elapsed Time=00hr 00min  6.98sec

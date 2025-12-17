@@ -1,0 +1,270 @@
+{
+  "brf_name": "BRF SJÖSTADEN 2",
+  "export_date": "2025-12-16",
+  "original_summary": {
+    "total_buildings": 2,
+    "total_apartments": 110,
+    "total_heated_area_sqm": 15350,
+    "construction_year": 2003,
+    "energy_class": "B",
+    "energy_performance_kwh_per_sqm": 53,
+    "heating_system": "Ground source heat pump + Exhaust air heat pump",
+    "has_solar_panels": true,
+    "location": "Hammarby Sjöstad, Stockholm"
+  },
+  "buildings": [
+    {
+      "building_id": 1,
+      "address": "Aktergatan 11",
+      "wgs84_footprint": [
+        [
+          18.103628140752814,
+          59.30204337465475
+        ],
+        [
+          18.10379254491289,
+          59.301986703552934
+        ],
+        [
+          18.103836674346717,
+          59.301971542410165
+        ],
+        [
+          18.103970774925514,
+          59.3019255687295
+        ],
+        [
+          18.104179433219752,
+          59.30209601010352
+        ],
+        [
+          18.104449016460705,
+          59.302323680252556
+        ],
+        [
+          18.10429413657826,
+          59.30237688987732
+        ],
+        [
+          18.104280844238815,
+          59.30238143055622
+        ],
+        [
+          18.10392456380735,
+          59.302110625177704
+        ],
+        [
+          18.103839036491973,
+          59.302140073579196
+        ],
+        [
+          18.103788297020586,
+          59.30211935630974
+        ],
+        [
+          18.103738221754742,
+          59.30209628668336
+        ],
+        [
+          18.103651958533835,
+          59.30206176834635
+        ],
+        [
+          18.103628140752814,
+          59.30204337465475
+        ]
+      ],
+      "envelope": {
+        "wwr": {
+          "north": 0.21600000000000003,
+          "south": 0.324,
+          "east": 0.27,
+          "west": 0.27,
+          "average": 0.17132233511688838,
+          "source": "era_estimation",
+          "confidence": 0.5,
+          "ai_detected": 0.10553722519481394,
+          "ai_confidence": "medium"
+        },
+        "u_values": {
+          "walls": 0.10988921764425981,
+          "roof": 0.08,
+          "floor": 0.1,
+          "windows": 0.8,
+          "source": "back_calculation",
+          "confidence": 0.6,
+          "notes": [
+            "Building 70% better than era typical",
+            "Based on 33 kWh/m²/year measured"
+          ]
+        },
+        "solar_potential": {
+          "total_roof_area_sqm": 2100.59,
+          "existing_pv_sqm": 500,
+          "existing_pv_kwh_yr": 75000,
+          "remaining_suitable_area_sqm": 235.2065,
+          "remaining_capacity_kwp": 47.0413,
+          "annual_yield_potential_kwh": 40073.869291627176,
+          "total_with_existing_kwh": 115073.86929162717,
+          "shading_loss_pct": 0.3641001347610695,
+          "neighbor_count": 12,
+          "estimated_install_cost_sek": 564495.6,
+          "payback_years": 9.390917489433157,
+          "source": "osm_shading_analysis"
+        },
+        "facade_material": "brick",
+        "material_confidence": 0.7
+      }
+    },
+    {
+      "building_id": 2,
+      "address": "Aktergatan 11",
+      "wgs84_footprint": [
+        [
+          18.104430563501626,
+          59.302890182641356
+        ],
+        [
+          18.104316410893137,
+          59.30292948029856
+        ],
+        [
+          18.10425576264117,
+          59.3029504274554
+        ],
+        [
+          18.104206473494724,
+          59.30291287090925
+        ],
+        [
+          18.103504454806533,
+          59.302379005393334
+        ],
+        [
+          18.10340097775206,
+          59.30230023421061
+        ],
+        [
+          18.103563980797137,
+          59.30224359682946
+        ],
+        [
+          18.10354719826342,
+          59.30223105636062
+        ],
+        [
+          18.103402888849825,
+          59.30212072747609
+        ],
+        [
+          18.10356986664194,
+          59.30206336624946
+        ],
+        [
+          18.103591759330698,
+          59.30207991867898
+        ],
+        [
+          18.10360720616543,
+          59.30210093833608
+        ],
+        [
+          18.10362184875795,
+          59.302136265765164
+        ],
+        [
+          18.10364501316538,
+          59.30216869403899
+        ],
+        [
+          18.103707306931867,
+          59.302254468003426
+        ],
+        [
+          18.10363132022658,
+          59.30228063334732
+        ],
+        [
+          18.104430563501626,
+          59.302890182641356
+        ]
+      ],
+      "envelope": {
+        "wwr": {
+          "north": 0.21600000000000003,
+          "south": 0.324,
+          "east": 0.27,
+          "west": 0.27,
+          "average": 0.17132233511688838,
+          "source": "era_estimation",
+          "confidence": 0.5,
+          "ai_detected": 0.10553722519481394,
+          "ai_confidence": "medium"
+        },
+        "u_values": {
+          "walls": 0.10988921764425981,
+          "roof": 0.08,
+          "floor": 0.1,
+          "windows": 0.8,
+          "source": "back_calculation",
+          "confidence": 0.6,
+          "notes": [
+            "Building 70% better than era typical",
+            "Based on 33 kWh/m²/year measured"
+          ]
+        },
+        "solar_potential": {
+          "total_roof_area_sqm": 2100.59,
+          "existing_pv_sqm": 500,
+          "existing_pv_kwh_yr": 75000,
+          "remaining_suitable_area_sqm": 235.2065,
+          "remaining_capacity_kwp": 47.0413,
+          "annual_yield_potential_kwh": 40079.39961046911,
+          "total_with_existing_kwh": 115079.39961046912,
+          "shading_loss_pct": 0.35035007009054375,
+          "neighbor_count": 11,
+          "estimated_install_cost_sek": 564495.6,
+          "payback_years": 9.38962169237932,
+          "source": "osm_shading_analysis"
+        },
+        "facade_material": "brick",
+        "material_confidence": 0.7
+      }
+    }
+  ],
+  "pdf_extracted_data": {
+    "additional_addresses": [
+      "Aktergatan 11",
+      "Aktergatan 13",
+      "Aktergatan 5",
+      "Aktergatan 7",
+      "Aktergatan 9",
+      "Hammarby Allé 173",
+      "Hammarby Allé 175",
+      "Lugnets Allé 22",
+      "Lugnets Allé 24",
+      "Lugnets Allé 26",
+      "Lugnets Allé 28",
+      "Lugnets Allé 30",
+      "Lugnets Allé 32",
+      "Lugnets Allé 34",
+      "Lugnets Allé 36",
+      "Lugnets Allé 38",
+      "Lugnets Allé 40",
+      "Lugnets Allé 42",
+      "Lugnets Allé 44"
+    ],
+    "ventilation_airflow_ls_sqm": 0.35,
+    "radon": null,
+    "specific_energy_kwh_sqm": 33.0,
+    "reference_value_2": null,
+    "recommendations": []
+  },
+  "facade_analysis": {
+    "source": "mapillary_opencv",
+    "raw_detected_wwr": 0.05276861259740697,
+    "corrected_facade_wwr": 0.10553722519481394,
+    "images_analyzed": 5,
+    "confidence": "medium"
+  }
+}
