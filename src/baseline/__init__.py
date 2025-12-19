@@ -102,6 +102,14 @@ from .archetypes_detailed import (
     match_by_visual,
 )
 from .generator import BaselineGenerator, BaselineModel, generate_baseline
+from .generator_v2 import (
+    GeomEppyGenerator,
+    analyze_footprint,
+    generate_from_footprint,
+    FloorPlan,
+    WallSegment,
+    GEOMEPPY_AVAILABLE,
+)
 from .calibrator import BaselineCalibrator, CalibrationResult, calibrate_baseline
 from .archetype_matcher_v2 import (
     ArchetypeMatcherV2,
@@ -200,6 +208,13 @@ __all__ = [
     'BaselineGenerator',
     'BaselineModel',
     'generate_baseline',
+    # Generator V2 (GeomEppy)
+    'GeomEppyGenerator',
+    'analyze_footprint',
+    'generate_from_footprint',
+    'FloorPlan',
+    'WallSegment',
+    'GEOMEPPY_AVAILABLE',
     # Calibrator
     'BaselineCalibrator',
     'CalibrationResult',
