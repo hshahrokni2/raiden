@@ -386,6 +386,151 @@ ECM_COSTS: Dict[str, ECMCost] = {
         source="Energimyndigheten",
         notes="Rooftop PV. ~150 kWp/m². Best economics with high self-consumption."
     ),
+
+    # =========================================================================
+    # SWEDISH-SPECIFIC QUICK WINS
+    # High-impact measures common in Swedish multi-family buildings
+    # =========================================================================
+
+    "exhaust_air_heat_pump": ECMCost(
+        cost_per_unit=12000,
+        unit="kW",
+        fixed_cost=50000,
+        installation_fraction=0.25,
+        lifetime_years=15,
+        maintenance_fraction=0.02,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=50,
+        source="BeBo",
+        notes="Frånluftsvärmepump (FVP). Recovers heat from exhaust air to DHW "
+              "or heating. Best for buildings with F-ventilation (exhaust only). "
+              "Common in 1970s-1990s buildings without FTX."
+    ),
+
+    "ground_source_heat_pump": ECMCost(
+        cost_per_unit=15000,
+        unit="kW",
+        fixed_cost=200000,  # Borehole drilling significant cost
+        installation_fraction=0.20,
+        lifetime_years=25,
+        maintenance_fraction=0.01,
+        category=CostCategory.MAJOR_INVESTMENT,
+        typical_savings_percent=65,
+        source="SABO",
+        notes="Bergvärmepump. High initial cost due to borehole drilling "
+              "(~300 SEK/m borehole). COP 4-5. Best economics for oil/gas "
+              "heated buildings or areas without district heating."
+    ),
+
+    "district_heating_optimization": ECMCost(
+        cost_per_unit=0,
+        unit="building",
+        fixed_cost=15000,  # Consultant + equipment adjustment
+        installation_fraction=0,
+        lifetime_years=5,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=8,
+        source="BeBo",
+        notes="Fjärrvärmeoptimering. Substation optimization: better ΔT, "
+              "reduced return temperature (bonus from energy company), "
+              "weather compensation fine-tuning. Often 5-15% savings."
+    ),
+
+    "solar_thermal": ECMCost(
+        cost_per_unit=8000,
+        unit="m² collector",
+        fixed_cost=40000,  # Storage tank, piping, controls
+        installation_fraction=0.35,
+        lifetime_years=25,
+        maintenance_fraction=0.01,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=15,  # DHW fraction
+        source="Energimyndigheten",
+        notes="Solfångare. Typically covers 40-60% of DHW in summer, "
+              "less in winter. ~2-3 m² per apartment for multi-family. "
+              "Declining market share due to PV economics."
+    ),
+
+    "low_flow_fixtures": ECMCost(
+        cost_per_unit=1500,
+        unit="apartment",
+        fixed_cost=5000,
+        installation_fraction=0.4,
+        lifetime_years=15,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=5,  # DHW savings ~20%, total ~5%
+        source="Energimyndigheten",
+        notes="Snålspolande blandare och duschmunstycken. Reduces DHW "
+              "consumption 20-30%. Quick payback. Include in ROT renovation."
+    ),
+
+    "imb_valves": ECMCost(
+        cost_per_unit=3500,
+        unit="apartment",
+        fixed_cost=10000,  # System design and commissioning
+        installation_fraction=0.3,
+        lifetime_years=20,
+        category=CostCategory.MEDIUM_COST,
+        typical_savings_percent=8,
+        source="BeBo",
+        notes="Individuell mätning och debitering (IMD). Apartment-level "
+              "metering with billing. Behavioral savings 10-20%. Required "
+              "for new buildings, retrofit challenging."
+    ),
+
+    "ftx_cleaning": ECMCost(
+        cost_per_unit=50,
+        unit="m² floor",
+        fixed_cost=10000,
+        installation_fraction=0.8,
+        lifetime_years=5,  # Should be done every 5 years
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=5,
+        source="BeBo",
+        notes="OVK-besiktning och kanalrensning. Heat exchanger and duct "
+              "cleaning restores efficiency. Dirty HRV can lose 10-20% "
+              "effectiveness."
+    ),
+
+    "attic_hatch_insulation": ECMCost(
+        cost_per_unit=2000,
+        unit="hatch",
+        fixed_cost=1000,
+        installation_fraction=0.5,
+        lifetime_years=30,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=1,
+        source="Sveby",
+        notes="Isolerad vindslucka. Often overlooked thermal bridge. "
+              "Include during attic insulation work."
+    ),
+
+    "stairwell_door_sealing": ECMCost(
+        cost_per_unit=5000,
+        unit="entrance",
+        fixed_cost=2000,
+        installation_fraction=0.6,
+        lifetime_years=15,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=2,
+        source="BeBo",
+        notes="Dörrförslutare och tätningslister på entrédörrar. Reduces "
+              "cold air infiltration through stairwells. Often combined "
+              "with air sealing package."
+    ),
+
+    "pipe_insulation": ECMCost(
+        cost_per_unit=200,
+        unit="m pipe",
+        fixed_cost=5000,
+        installation_fraction=0.7,
+        lifetime_years=30,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=3,
+        source="Energimyndigheten",
+        notes="Rörisolering i källare och undercentral. Uninsulated pipes "
+              "in basements lose 3-5% of DHW energy. Quick payback."
+    ),
 }
 
 
@@ -404,6 +549,15 @@ PACKAGE_SYNERGIES: Dict[tuple, float] = {
     ("ftx_installation", "demand_controlled_ventilation"): 0.80,
     # Shared electrical work
     ("smart_thermostats", "led_lighting"): 0.90,
+    # Swedish-specific synergies
+    ("district_heating_optimization", "radiator_balancing"): 0.85,
+    ("air_sealing", "stairwell_door_sealing"): 0.80,
+    ("roof_insulation", "attic_hatch_insulation"): 0.70,
+    ("low_flow_fixtures", "pipe_insulation"): 0.90,
+    ("ftx_cleaning", "ftx_upgrade"): 0.75,
+    # Heat pump combinations
+    ("exhaust_air_heat_pump", "solar_pv"): 0.95,
+    ("ground_source_heat_pump", "solar_pv"): 0.95,
 }
 
 
