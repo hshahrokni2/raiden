@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Energianalys - BRF SJÖSTADEN 2</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --warning: #d97706;
+            --danger: #dc2626;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: var(--gray-700);
+            background: var(--gray-100);
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary), #1e40af);
+            color: white;
+            padding: 2rem;
+        }
+
+        header h1 {
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            opacity: 0.9;
+            font-size: 1rem;
+        }
+
+        .content {
+            padding: 2rem;
+        }
+
+        section {
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            color: var(--gray-900);
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--gray-200);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .stat-card {
+            background: var(--gray-100);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-card .value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .stat-card .label {
+            font-size: 0.875rem;
+            color: var(--gray-700);
+        }
+
+        .measure-list {
+            list-style: none;
+        }
+
+        .measure-list li {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .measure-list li:last-child {
+            border-bottom: none;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: #dcfce7;
+            color: var(--success);
+        }
+
+        .badge-warning {
+            background: #fef3c7;
+            color: var(--warning);
+        }
+
+        .badge-danger {
+            background: #fee2e2;
+            color: var(--danger);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        th {
+            background: var(--gray-100);
+            font-weight: 600;
+            color: var(--gray-900);
+        }
+
+        tr:hover {
+            background: var(--gray-100);
+        }
+
+        .savings-positive {
+            color: var(--success);
+            font-weight: 600;
+        }
+
+        .savings-neutral {
+            color: var(--gray-700);
+        }
+
+        .chart-bar {
+            height: 20px;
+            background: var(--gray-200);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 0.25rem;
+        }
+
+        .chart-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--success), #22c55e);
+            border-radius: 4px;
+        }
+
+        .recommendation {
+            background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+        }
+
+        .recommendation h3 {
+            color: var(--success);
+            margin-bottom: 0.5rem;
+        }
+
+        footer {
+            background: var(--gray-100);
+            padding: 1rem 2rem;
+            text-align: center;
+            font-size: 0.875rem;
+            color: var(--gray-700);
+        }
+
+        /* Package cards */
+        .package-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        .package-card {
+            border: 2px solid var(--gray-200);
+            border-radius: 12px;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .package-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+        }
+
+        .package-card.basic {
+            border-color: #93c5fd;
+        }
+
+        .package-card.standard {
+            border-color: #86efac;
+        }
+
+        .package-card.premium {
+            border-color: #fcd34d;
+        }
+
+        .package-header {
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .package-card.basic .package-header {
+            background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+        }
+
+        .package-card.standard .package-header {
+            background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+        }
+
+        .package-card.premium .package-header {
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+        }
+
+        .package-header h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.25rem;
+            color: var(--gray-900);
+        }
+
+        .package-header .package-savings {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success);
+        }
+
+        .package-body {
+            padding: 1rem;
+        }
+
+        .package-body ul {
+            list-style: none;
+            margin-bottom: 1rem;
+        }
+
+        .package-body li {
+            padding: 0.375rem 0;
+            font-size: 0.875rem;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .package-body li:last-child {
+            border-bottom: none;
+        }
+
+        .package-footer {
+            background: var(--gray-100);
+            padding: 1rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .package-footer .label {
+            color: var(--gray-700);
+        }
+
+        .package-footer .value {
+            font-weight: 600;
+            text-align: right;
+        }
+
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>BRF SJÖSTADEN 2</h1>
+            <p>Aktergatan 11, Hammarby Sjöstad, Stockholm</p>
+        </header>
+
+        <div class="content">
+            <section>
+                <h2>Byggnadsöversikt</h2>
+                <div class="grid">
+                    <div class="stat-card">
+                        <div class="value">2003</div>
+                        <div class="label">Byggnadsår</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">15,350 m²</div>
+                        <div class="label">Atemp</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">4</div>
+                        <div class="label">Våningar</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">B</div>
+                        <div class="label">Energiklass</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">33 kWh/m²</div>
+                        <div class="label">Deklarerad energi</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">Brick</div>
+                        <div class="label">Fasadmaterial</div>
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <h2>Befintliga åtgärder (2)</h2>
+                <ul class="measure-list">
+                    <li><span class="badge badge-success">✓</span> FTX-ventilation</li>
+<li><span class="badge badge-success">✓</span> Solceller</li>
+
+                </ul>
+            </section>
+
+            <section>
+                <h2>ECM-analys</h2>
+                <div class="grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 1rem;">
+                    <div class="stat-card">
+                        <div class="value" style="color: var(--success);">15</div>
+                        <div class="label">Tillämpliga åtgärder</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" style="color: var(--warning);">3</div>
+                        <div class="label">Redan genomförda</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" style="color: var(--danger);">4</div>
+                        <div class="label">Ej tillämpliga</div>
+                    </div>
+                </div>
+
+                
+        <table>
+            <thead>
+                <tr>
+                    <th>Åtgärd</th>
+                    <th>Resultat</th>
+                    <th>Besparing</th>
+                    <th>Visualisering</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+            <tr>
+                <td>Demand Controlled Ventilation</td>
+                <td>18.4 kWh/m²</td>
+                <td class="savings-positive">-49%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 49.277048559182305%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Internal Wall Insulation</td>
+                <td>31.4 kWh/m²</td>
+                <td class="savings-positive">-14%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 13.616486291082577%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Air Sealing</td>
+                <td>32.5 kWh/m²</td>
+                <td class="savings-positive">-10%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 10.364326992240867%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Heat Pump Integration</td>
+                <td>35.1 kWh/m²</td>
+                <td class="savings-positive">-3%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 3.201639459782063%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Smart Thermostats</td>
+                <td>35.5 kWh/m²</td>
+                <td class="savings-positive">-2%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 2.3360752356987686%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Roof Insulation Upgrade</td>
+                <td>35.5 kWh/m²</td>
+                <td class="savings-positive">-2%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 2.0937448002873578%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Effektvakt Optimization</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Ventilation Schedule Optimization</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Radiator Balancing</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Night Setback</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Summer Bypass</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>DHW Temperature Reduction</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>Pump Speed Optimization</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>BMS Tune-Up</td>
+                <td>36.3 kWh/m²</td>
+                <td class="savings-neutral">0%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            <tr>
+                <td>LED Lighting Retrofit *</td>
+                <td>40.8 kWh/m²</td>
+                <td class="savings-neutral">+12%</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: 0%;"></div>
+                    </div>
+                </td>
+            </tr>
+            
+            </tbody>
+        </table>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--gray-700);">
+            Baseline: 36.3 kWh/m²/år
+        </p>
+        
+            <p style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--gray-700); font-style: italic;">
+                * LED-belysning minskar elförbrukningen med 40-60%, men mindre interna värmetillskott
+                ökar värmebehovet i nordiskt klimat. Nettoeffekten är oftast positiv då elbesparingen
+                överstiger den ökade värmekostnaden.
+            </p>
+            
+        
+            </section>
+
+            
+            <section>
+                <h2>Solpotential</h2>
+                <div class="grid">
+                    <div class="stat-card">
+                        <div class="value">500 m²</div>
+                        <div class="label">Befintlig solcellsyta</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">235 m²</div>
+                        <div class="label">Tillgänglig takyta</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">47 kWp</div>
+                        <div class="label">Potentiell kapacitet</div>
+                    </div>
+                </div>
+            </section>
+            
+
+            
+            <section style="margin-bottom: 2rem;">
+                <h2 style="color: #059669;">🎯 Steg 0: Nollkostnadsåtgärder</h2>
+                <p style="margin-bottom: 1rem; color: var(--gray-700); background: #ecfdf5; padding: 1rem; border-radius: 8px; border-left: 4px solid #10b981;">
+                    <strong>Börja här!</strong> Dessa åtgärder kräver minimal eller ingen investering och ger omedelbar besparing.
+                    Typiskt 5-15% reduktion av energikostnader genom optimering av befintliga system.
+                </p>
+                <div class="package-cards">
+                    
+                <div class="package-card zero-cost" style="border-color: #10b981; background: linear-gradient(135deg, #ecfdf5, #d1fae5);">
+                    <div class="package-header" style="background: linear-gradient(135deg, #10b981, #059669); color: white;">
+                        <h3>Steg 0: Nollkostnad <span class="badge" style="background: white; color: #059669;">GÖR DETTA FÖRST!</span></h3>
+                        <div class="package-savings" style="color: white;">~5-15%</div>
+                        <div style="opacity: 0.9;">Driftoptimering - GÖR DETTA FÖRST</div>
+                    </div>
+                    <div class="package-body">
+                        <ul>
+                            <li>Effektvakt Optimization (kostnadsbesparing)</li>
+<li>Ventilation Schedule Optimization (kostnadsbesparing)</li>
+<li>Night Setback (kostnadsbesparing)</li>
+<li>Summer Bypass (kostnadsbesparing)</li>
+<li>Hot Water Temperature (kostnadsbesparing)</li>
+<li>Pump Optimization (kostnadsbesparing)</li>
+<li>Bms Optimization (kostnadsbesparing)</li>
+
+                        </ul>
+                    </div>
+                    <div class="package-footer" style="background: #ecfdf5;">
+                        <span class="label">Investering:</span>
+                        <span class="value">14,000 SEK</span>
+                        <span class="label">Typisk återbetalning:</span>
+                        <span class="value">< 6 månader</span>
+                        <span class="label">Risk:</span>
+                        <span class="value">Ingen</span>
+                        <span class="label">Störning:</span>
+                        <span class="value">Ingen</span>
+                    </div>
+                </div>
+                
+                </div>
+            </section>
+            
+            <section>
+                <h2>💰 Investeringspaket (Steg 1-3)</h2>
+                <p style="margin-bottom: 1rem; color: var(--gray-700);">
+                    Paket simuleras med EnergyPlus för faktiska samverkanseffekter. Välj paket baserat på budget och ambitionsnivå.
+                </p>
+                <div class="package-cards">
+                    
+                <div class="package-card basic">
+                    <div class="package-header">
+                        <h3>Steg 1: Snabba vinster <span class="badge badge-success">SIMULERAD</span></h3>
+                        <div class="package-savings">-3%</div>
+                        <div>Låg investering, snabb återbetalning (< 500k SEK)</div>
+                    </div>
+                    <div class="package-body">
+                        <ul>
+                            <li>Heat Pump Integration (3%)</li>
+
+                        </ul>
+                    </div>
+                    <div class="package-footer">
+                        <span class="label">Investering:</span>
+                        <span class="value">267,500 SEK</span>
+                        <span class="label">Årlig besparing:</span>
+                        <span class="value">14,272 SEK</span>
+                        <span class="label">Återbetalningstid:</span>
+                        <span class="value">18.7 år</span>
+                        <span class="label">CO₂-reduktion:</span>
+                        <span class="value">0.1 kg/m²</span>
+                        
+                        <span class="label">Summa enskilda:</span>
+                        <span class="value">3%</span>
+                        <span class="label">Samverkanseffekt:</span>
+                        <span class="value">100%</span>
+                    
+                    </div>
+                </div>
+                
+                <div class="package-card standard">
+                    <div class="package-header">
+                        <h3>Steg 2: Standardpaket <span class="badge badge-success">SIMULERAD</span></h3>
+                        <div class="package-savings">-12%</div>
+                        <div>Balanserad investering (500k - 2M SEK)</div>
+                    </div>
+                    <div class="package-body">
+                        <ul>
+                            <li>Heat Pump Integration (3%)</li>
+<li>Air Sealing (10%)</li>
+
+                        </ul>
+                    </div>
+                    <div class="package-footer">
+                        <span class="label">Investering:</span>
+                        <span class="value">1,572,250 SEK</span>
+                        <span class="label">Årlig besparing:</span>
+                        <span class="value">52,811 SEK</span>
+                        <span class="label">Återbetalningstid:</span>
+                        <span class="value">29.8 år</span>
+                        <span class="label">CO₂-reduktion:</span>
+                        <span class="value">0.2 kg/m²</span>
+                        
+                        <span class="label">Summa enskilda:</span>
+                        <span class="value">14%</span>
+                        <span class="label">Samverkanseffekt:</span>
+                        <span class="value">87%</span>
+                    
+                    </div>
+                </div>
+                
+                <div class="package-card premium">
+                    <div class="package-header">
+                        <h3>Steg 3: Premiumpaket <span class="badge badge-success">SIMULERAD</span></h3>
+                        <div class="package-savings">-69%</div>
+                        <div>Större renovering (> 2M SEK)</div>
+                    </div>
+                    <div class="package-body">
+                        <ul>
+                            <li>Demand Controlled Ventilation (49%)</li>
+<li>Heat Pump Integration (3%)</li>
+<li>Air Sealing (10%)</li>
+<li>Smart Thermostats (2%)</li>
+<li>Roof Insulation (2%)</li>
+<li>Wall Internal Insulation (14%)</li>
+
+                        </ul>
+                    </div>
+                    <div class="package-footer">
+                        <span class="label">Investering:</span>
+                        <span class="value">21,132,536 SEK</span>
+                        <span class="label">Årlig besparing:</span>
+                        <span class="value">309,352 SEK</span>
+                        <span class="label">Återbetalningstid:</span>
+                        <span class="value">68.3 år</span>
+                        <span class="label">CO₂-reduktion:</span>
+                        <span class="value">1.3 kg/m²</span>
+                        
+                        <span class="label">Summa enskilda:</span>
+                        <span class="value">60%</span>
+                        <span class="label">Samverkanseffekt:</span>
+                        <span class="value">116%</span>
+                    
+                    </div>
+                </div>
+                
+                </div>
+            </section>
+            
+
+            <section>
+                <h2>Sammanfattning</h2>
+                <div class="recommendation">
+                    <h3>Rekommendation</h3>
+                    <p>Rekommenderade åtgärder: Demand Controlled Ventilation, Internal Wall Insulation, Air Sealing. Kombinerat kan dessa åtgärder minska energianvändningen med upp till 51% (med hänsyn till samverkanseffekter). Byggnaden har redan 2 genomförda energiåtgärder.</p>
+                </div>
+            </section>
+        </div>
+
+        <footer>
+            <p>Genererad av Raiden - Swedish Building Energy Analysis | 2025-12-18 21:25</p>
+        </footer>
+    </div>
+</body>
+</html>

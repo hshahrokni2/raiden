@@ -61,3 +61,18 @@ data/cache/
 *.pt
 *.pth
 *.onnx
+
+# Large GeoJSON data files (download separately)
+data/*.geojson
+data/sweden_buildings.geojson
+data/Generated_Buildings.geojson
+
+# Intermediate output directories
+output_calibrated/
+output_calibrated2/
+output_calibrated3/
+output_generated/
+output/
+
+# Simulation results (reproducible, large)
+examples/*/simulation_results/

@@ -11,18 +11,27 @@ Each archetype defines:
 - Internal loads (Sveby defaults)
 - Typical WWR
 
+Enhanced with building form data (lamellhus, skivhus, punkthus, etc.)
+for accurate thermal bridge and geometry calculations.
+
 Usage:
     matcher = ArchetypeMatcher()
     archetype = matcher.match(
         construction_year=1968,
         building_type='multi_family',
-        facade_material='concrete'
+        facade_material='concrete',
+        building_form='lamellhus'
     )
 """
 
-from dataclasses import dataclass
-from typing import Dict, Optional, List
+from dataclasses import dataclass, field
+from typing import Dict, Optional, List, Tuple
 from enum import Enum
+
+from .building_forms import (
+    BuildingForm, BuildingFormProperties, ConstructionMethod,
+    BUILDING_FORMS, get_form_properties, detect_building_form
+)
 
 
 class BuildingType(Enum):
@@ -106,6 +115,46 @@ class SwedishArchetype:
     common_issues: List[str]
     typical_ecms: List[str]
 
+    # Building forms common in this era
+    typical_forms: List[BuildingForm] = field(default_factory=list)
+
+    # Construction methods common in this era
+    typical_construction: List[ConstructionMethod] = field(default_factory=list)
+
+    def get_adjusted_envelope(
+        self,
+        building_form: Optional[BuildingForm] = None
+    ) -> EnvelopeProperties:
+        """
+        Get envelope properties adjusted for building form.
+
+        Building form affects:
+        - Wall U-value through thermal bridge factor
+        - WWR by orientation
+
+        Args:
+            building_form: Specific building form (or None for base values)
+
+        Returns:
+            Adjusted EnvelopeProperties
+        """
+        if building_form is None:
+            return self.envelope
+
+        form_props = get_form_properties(building_form)
+
+        # Adjust wall U-value for thermal bridges
+        adjusted_wall_u = self.envelope.wall_u_value * form_props.thermal_bridge_factor
+
+        return EnvelopeProperties(
+            wall_u_value=adjusted_wall_u,
+            roof_u_value=self.envelope.roof_u_value,
+            floor_u_value=self.envelope.floor_u_value,
+            window_u_value=self.envelope.window_u_value,
+            window_shgc=self.envelope.window_shgc,
+            infiltration_ach=self.envelope.infiltration_ach,
+        )
+
 
 # =============================================================================
 # SWEDISH ARCHETYPE DATABASE
@@ -146,6 +195,8 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="Pre-war brick buildings, often with ornate facades",
         common_issues=["High infiltration", "No wall insulation", "Cold floors"],
         typical_ecms=["Window replacement", "Attic insulation", "Air sealing"],
+        typical_forms=[BuildingForm.SLUTET_KVARTER, BuildingForm.TRAPPHUS],
+        typical_construction=[ConstructionMethod.MURAD_TEGEL],
     ),
 
     "1945_1960_brick": SwedishArchetype(
@@ -181,6 +232,8 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="Post-war 'Folkhemmet' era, standardized construction",
         common_issues=["Limited insulation", "Thermal bridges at balconies"],
         typical_ecms=["Window replacement", "Roof insulation", "FTX installation"],
+        typical_forms=[BuildingForm.LAMELLHUS, BuildingForm.STJARNHUS, BuildingForm.PUNKTHUS],
+        typical_construction=[ConstructionMethod.MURAD_TEGEL, ConstructionMethod.PLATSGJUTEN],
     ),
 
     "1961_1975_concrete": SwedishArchetype(
@@ -216,6 +269,8 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="Million Programme concrete panel buildings",
         common_issues=["Thermal bridges", "Facade degradation", "F-ventilation losses"],
         typical_ecms=["External wall insulation", "FTX conversion", "Window replacement"],
+        typical_forms=[BuildingForm.SKIVHUS, BuildingForm.LAMELLHUS, BuildingForm.LOFTGANGSHUS, BuildingForm.PUNKTHUS],
+        typical_construction=[ConstructionMethod.BETONGELEMENT],
     ),
 
     "1976_1985_insulated": SwedishArchetype(
@@ -251,6 +306,8 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="Post oil crisis, improved insulation standards",
         common_issues=["Still F-ventilation", "Some thermal bridges"],
         typical_ecms=["FTX conversion", "Air sealing", "Window upgrade to U=1.0"],
+        typical_forms=[BuildingForm.LAMELLHUS, BuildingForm.RADHUS, BuildingForm.VINKELBYGGNAD],
+        typical_construction=[ConstructionMethod.BETONGELEMENT, ConstructionMethod.TRASTOMME],
     ),
 
     "1986_1995_well_insulated": SwedishArchetype(
@@ -286,6 +343,8 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="FTX becoming standard, good insulation",
         common_issues=["FTX units aging", "Original windows still adequate"],
         typical_ecms=["FTX upgrade to 85%", "LED lighting", "Solar PV"],
+        typical_forms=[BuildingForm.LAMELLHUS, BuildingForm.PUNKTHUS, BuildingForm.RADHUS],
+        typical_construction=[ConstructionMethod.TRASTOMME, ConstructionMethod.BETONGELEMENT],
     ),
 
     "1996_2010_modern": SwedishArchetype(
@@ -321,6 +380,8 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="Modern BBR standards, efficient systems",
         common_issues=["Good baseline, limited ECM potential"],
         typical_ecms=["Solar PV", "DCV", "LED lighting"],
+        typical_forms=[BuildingForm.LAMELLHUS, BuildingForm.PUNKTHUS, BuildingForm.GENERIC],
+        typical_construction=[ConstructionMethod.BETONGELEMENT, ConstructionMethod.TRASTOMME, ConstructionMethod.PREFAB_TRA],
     ),
 
     "2011_plus_low_energy": SwedishArchetype(
@@ -356,21 +417,39 @@ SWEDISH_ARCHETYPES: Dict[str, SwedishArchetype] = {
         description="BBR 2011+ requirements, approaching passive house",
         common_issues=["Very efficient, minimal ECM potential"],
         typical_ecms=["Solar PV", "Battery storage"],
+        typical_forms=[BuildingForm.LAMELLHUS, BuildingForm.PUNKTHUS, BuildingForm.GENERIC],
+        typical_construction=[ConstructionMethod.PREFAB_TRA, ConstructionMethod.CLT, ConstructionMethod.TRASTOMME],
     ),
 }
 
 
+@dataclass
+class MatchResult:
+    """Result of archetype matching with form information."""
+    archetype: SwedishArchetype
+    building_form: BuildingForm
+    form_properties: BuildingFormProperties
+    match_score: float
+    adjusted_envelope: EnvelopeProperties
+
+
 class ArchetypeMatcher:
     """
-    Match building to most appropriate archetype.
+    Match building to most appropriate archetype with form detection.
 
     Usage:
         matcher = ArchetypeMatcher()
-        archetype = matcher.match(
+        result = matcher.match_with_form(
             construction_year=1968,
             building_type=BuildingType.MULTI_FAMILY,
-            facade_material='concrete'
+            facade_material='concrete',
+            stories=8,
+            width_m=15,
+            length_m=80
         )
+        # result.archetype - the matched archetype
+        # result.building_form - detected form (e.g., SKIVHUS)
+        # result.adjusted_envelope - U-values with thermal bridge correction
     """
 
     def __init__(self, archetypes: Dict[str, SwedishArchetype] = None):
@@ -380,7 +459,8 @@ class ArchetypeMatcher:
         self,
         construction_year: int,
         building_type: BuildingType = BuildingType.MULTI_FAMILY,
-        facade_material: Optional[str] = None
+        facade_material: Optional[str] = None,
+        building_form: Optional[str] = None,
     ) -> SwedishArchetype:
         """
         Find best matching archetype.
@@ -389,11 +469,20 @@ class ArchetypeMatcher:
             construction_year: Year building was constructed
             building_type: Type of building
             facade_material: Detected facade material (optional)
+            building_form: Building form string (optional, e.g., 'lamellhus')
 
         Returns:
             Best matching SwedishArchetype
         """
         candidates = []
+
+        # Convert form string to enum if provided
+        form_enum = None
+        if building_form:
+            try:
+                form_enum = BuildingForm(building_form.lower())
+            except ValueError:
+                pass
 
         for key, archetype in self.archetypes.items():
             # Check year range
@@ -407,6 +496,10 @@ class ArchetypeMatcher:
                 # Boost for material match
                 if facade_material and facade_material.lower() in [m.lower() for m in archetype.facade_materials]:
                     score += 30
+
+                # Boost for form match
+                if form_enum and form_enum in archetype.typical_forms:
+                    score += 25
 
                 candidates.append((score, archetype))
 
@@ -422,6 +515,76 @@ class ArchetypeMatcher:
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
+    def match_with_form(
+        self,
+        construction_year: int,
+        building_type: BuildingType = BuildingType.MULTI_FAMILY,
+        facade_material: Optional[str] = None,
+        stories: Optional[int] = None,
+        width_m: Optional[float] = None,
+        length_m: Optional[float] = None,
+        has_gallery: bool = False,
+        building_form: Optional[str] = None,
+    ) -> MatchResult:
+        """
+        Match archetype with automatic form detection and envelope adjustment.
+
+        Args:
+            construction_year: Year building was constructed
+            building_type: Type of building
+            facade_material: Detected facade material
+            stories: Number of stories
+            width_m: Building width/depth
+            length_m: Building length
+            has_gallery: If external gallery access (loftgång)
+            building_form: Explicit building form (overrides detection)
+
+        Returns:
+            MatchResult with archetype, form, and adjusted envelope
+        """
+        # First match archetype
+        archetype = self.match(
+            construction_year=construction_year,
+            building_type=building_type,
+            facade_material=facade_material,
+            building_form=building_form,
+        )
+
+        # Detect or use provided form
+        if building_form:
+            try:
+                form = BuildingForm(building_form.lower())
+            except ValueError:
+                form = BuildingForm.GENERIC
+        elif stories and width_m and length_m:
+            form = detect_building_form(
+                stories=stories,
+                width_m=width_m,
+                length_m=length_m,
+                construction_year=construction_year,
+                has_gallery=has_gallery,
+            )
+        elif archetype.typical_forms:
+            # Use first typical form for this era
+            form = archetype.typical_forms[0]
+        else:
+            form = BuildingForm.GENERIC
+
+        form_props = get_form_properties(form)
+        adjusted_envelope = archetype.get_adjusted_envelope(form)
+
+        return MatchResult(
+            archetype=archetype,
+            building_form=form,
+            form_properties=form_props,
+            match_score=100.0,  # Could calculate actual score
+            adjusted_envelope=adjusted_envelope,
+        )
+
     def list_archetypes(self) -> List[str]:
         """List all available archetype names."""
         return list(self.archetypes.keys())
+
+    def list_forms(self) -> List[str]:
+        """List all available building forms."""
+        return [f.value for f in BuildingForm]

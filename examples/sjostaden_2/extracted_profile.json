@@ -1,0 +1,76 @@
+{
+  "building_id": "bldg_59.302000_18.104000",
+  "address": "Aktergatan 11, Hammarby Sj\u00f6stad",
+  "latitude": 59.302,
+  "longitude": 18.104,
+  "construction_year": 2003,
+  "building_type": "multi_family",
+  "geometry": {
+    "footprint_area_m2": 300.03601487475026,
+    "gross_floor_area_m2": 2100.2521041232517,
+    "height_m": 18.900000000000002,
+    "floors": 7,
+    "perimeter_m": 83.31211328121194,
+    "wall_areas": {
+      "north": 363.0156518058087,
+      "south": 363.1052583525661,
+      "east": 424.20949630038524,
+      "west": 424.26853455614565,
+      "total": 1574.5989410149057
+    },
+    "window_areas": {
+      "north": 58.08250428892941,
+      "south": 87.14526200461587,
+      "east": 84.84189926007706,
+      "west": 84.85370691122914,
+      "total": 314.92337246485147
+    },
+    "roof_area_m2": 300.03601487475026,
+    "volume_m3": 5670.680681132781
+  },
+  "envelope": {
+    "u_values": {
+      "wall": 0.18,
+      "roof": 0.1,
+      "floor": 0.15,
+      "window": 1.2
+    },
+    "wwr": {
+      "north": 0.16000000000000003,
+      "south": 0.24,
+      "east": 0.2,
+      "west": 0.2,
+      "average": 0.2
+    },
+    "window_shgc": 0.5,
+    "infiltration_ach": 0.06,
+    "facade_material": "unknown"
+  },
+  "hvac": {
+    "heating_system": "fj\u00e4rrv\u00e4rme",
+    "ventilation_type": "ftx",
+    "heat_recovery_efficiency": 0.75,
+    "ventilation_rate_l_s_m2": 0.35
+  },
+  "solar_potential": {
+    "roof_type": "hipped",
+    "roof_area_m2": 3247.8522927000004,
+    "available_area_m2": 2484.6070039155006,
+    "obstruction_area_m2": 0,
+    "existing_pv_kwp": 0,
+    "new_capacity_kwp": 475.2,
+    "annual_generation_kwh": 429039.6,
+    "shading_loss_pct": 0,
+    "install_cost_sek": 5702400.0,
+    "payback_years": 8.860720548872413
+  },
+  "archetype_name": "1996-2010 Modern",
+  "overall_confidence": 0.475,
+  "extraction_notes": [
+    "Footprint from osm",
+    "Height: estimated = 18.900000000000002m",
+    "Floors: detected = 7",
+    "Archetype: 1996-2010 Modern",
+    "Roof analysis: google_solar_api (confidence: 90%)"
+  ]
+}

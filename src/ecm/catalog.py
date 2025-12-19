@@ -21,6 +21,7 @@ class ECMCategory(Enum):
     RENEWABLE = "renewable"
     CONTROLS = "controls"
     LIGHTING = "lighting"
+    OPERATIONAL = "operational"  # Zero-cost operational optimization
 
 
 @dataclass
@@ -50,16 +51,9 @@ class ECM:
     category: ECMCategory
     description: str
 
-    # Parameters that can be varied
-    parameters: List[ECMParameter] = field(default_factory=list)
-
-    # Constraints - if ANY fail, ECM is not applicable
-    constraints: List[ECMConstraint] = field(default_factory=list)
-
     # Cost estimation
     cost_per_unit: float  # SEK per unit (m², kW, etc.)
     cost_unit: str  # What the cost is per
-    fixed_cost: float = 0  # Fixed cost component
 
     # Typical savings (for initial ranking)
     typical_savings_percent: float  # % reduction in relevant end use
@@ -67,6 +61,15 @@ class ECM:
 
     # Implementation notes
     disruption_level: str  # 'low', 'medium', 'high'
+
+    # Parameters that can be varied (defaults after required fields)
+    parameters: List[ECMParameter] = field(default_factory=list)
+
+    # Constraints - if ANY fail, ECM is not applicable
+    constraints: List[ECMConstraint] = field(default_factory=list)
+
+    # Optional fields with defaults
+    fixed_cost: float = 0  # Fixed cost component
     typical_lifetime_years: int = 25
 
 
@@ -361,6 +364,228 @@ SWEDISH_ECM_CATALOG: Dict[str, ECM] = {
         disruption_level="low",
         typical_lifetime_years=15,
     ),
+
+    # =========================================================================
+    # OPERATIONAL ECMs (Zero/Low Cost)
+    # =========================================================================
+
+    "duc_calibration": ECM(
+        id="duc_calibration",
+        name="DUC Calibration",
+        name_sv="DUC-optimering",
+        category=ECMCategory.OPERATIONAL,
+        description="Optimize district heating control unit (DUC/UC) settings. "
+                   "Adjusts heating curve, night setback, outdoor reset.",
+        parameters=[
+            ECMParameter("heating_curve_offset", [-2, -1, 0], "°C", "Curve offset"),
+            ECMParameter("night_setback", [1, 2, 3], "°C", "Night setback"),
+        ],
+        constraints=[
+            ECMConstraint("heating_system", "in", ["district", "central_boiler"],
+                         "Requires central heating with DUC"),
+        ],
+        cost_per_unit=0,  # Zero material cost
+        cost_unit="building",
+        typical_savings_percent=5,
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=5,
+    ),
+
+    "effektvakt_optimization": ECM(
+        id="effektvakt_optimization",
+        name="Effektvakt Optimization",
+        name_sv="Effektvaktsoptimering",
+        category=ECMCategory.OPERATIONAL,
+        description="Optimize power guard (effektvakt) settings to reduce peak demand "
+                   "and tariff charges. No energy savings but cost reduction.",
+        parameters=[
+            ECMParameter("peak_reduction", [10, 15, 20], "%", "Peak demand reduction"),
+        ],
+        constraints=[
+            ECMConstraint("has_effektvakt", "eq", True,
+                         "Requires existing effektvakt installation"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        typical_savings_percent=0,  # Cost savings, not energy
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=5,
+    ),
+
+    "heating_curve_adjustment": ECM(
+        id="heating_curve_adjustment",
+        name="Heating Curve Adjustment",
+        name_sv="Värmekurvejustering",
+        category=ECMCategory.OPERATIONAL,
+        description="Optimize supply water temperature (framledningstemperatur) based on "
+                   "actual building response. Often set too high by default.",
+        parameters=[
+            ECMParameter("curve_reduction", [2, 4, 6], "°C", "Curve reduction"),
+        ],
+        constraints=[
+            ECMConstraint("heating_system", "in", ["district", "central_boiler", "heat_pump_ground"],
+                         "Requires hydronic heating system"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        typical_savings_percent=5,
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=3,
+    ),
+
+    "ventilation_schedule_optimization": ECM(
+        id="ventilation_schedule_optimization",
+        name="Ventilation Schedule Optimization",
+        name_sv="Ventilationsschemaoptimering",
+        category=ECMCategory.OPERATIONAL,
+        description="Adjust ventilation schedules to actual occupancy patterns. "
+                   "Many buildings run full ventilation 24/7 unnecessarily.",
+        parameters=[
+            ECMParameter("night_reduction", [30, 50, 70], "%", "Night flow reduction"),
+        ],
+        constraints=[
+            ECMConstraint("ventilation_type", "in", ["ftx", "f"],
+                         "Requires mechanical ventilation with variable speed"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        typical_savings_percent=5,
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=3,
+    ),
+
+    "radiator_balancing": ECM(
+        id="radiator_balancing",
+        name="Radiator Balancing",
+        name_sv="Injustering av radiatorer",
+        category=ECMCategory.OPERATIONAL,
+        description="Hydraulic balancing of radiator system. Ensures even heat "
+                   "distribution, prevents overheating in some apartments.",
+        parameters=[],
+        constraints=[
+            ECMConstraint("heating_distribution", "eq", "radiator",
+                         "Requires radiator heating system"),
+        ],
+        cost_per_unit=200,  # Per radiator
+        cost_unit="radiator",
+        typical_savings_percent=5,
+        affected_end_use="heating",
+        disruption_level="low",
+        typical_lifetime_years=10,
+    ),
+
+    "night_setback": ECM(
+        id="night_setback",
+        name="Night Setback",
+        name_sv="Nattsänkning",
+        category=ECMCategory.OPERATIONAL,
+        description="Reduce heating setpoint 2-3°C during unoccupied hours (22:00-06:00). "
+                   "Most buildings have this feature available but disabled.",
+        parameters=[
+            ECMParameter("setback_c", [1, 2, 3], "°C", "Setback amount"),
+            ECMParameter("start_hour", [21, 22, 23], "h", "Start hour"),
+            ECMParameter("end_hour", [5, 6, 7], "h", "End hour"),
+        ],
+        constraints=[],  # Works for all buildings with heating
+        cost_per_unit=0,
+        cost_unit="building",
+        fixed_cost=1000,  # BMS programming
+        typical_savings_percent=5,
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=5,
+    ),
+
+    "summer_bypass": ECM(
+        id="summer_bypass",
+        name="Summer Bypass",
+        name_sv="Sommaravstängning",
+        category=ECMCategory.OPERATIONAL,
+        description="Disable heating when outdoor temperature exceeds threshold (17°C). "
+                   "Prevents unnecessary heating during warm periods.",
+        parameters=[
+            ECMParameter("threshold_c", [15, 17, 19], "°C", "Outdoor temp threshold"),
+        ],
+        constraints=[],
+        cost_per_unit=0,
+        cost_unit="building",
+        fixed_cost=500,
+        typical_savings_percent=3,
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=5,
+    ),
+
+    "hot_water_temperature": ECM(
+        id="hot_water_temperature",
+        name="DHW Temperature Reduction",
+        name_sv="Sänkt varmvattentemperatur",
+        category=ECMCategory.OPERATIONAL,
+        description="Reduce domestic hot water setpoint from 60°C to 55°C where safe. "
+                   "Requires circulation to prevent Legionella.",
+        parameters=[
+            ECMParameter("target_temp_c", [55, 57], "°C", "Target temperature"),
+        ],
+        constraints=[
+            ECMConstraint("has_dhw_circulation", "eq", True,
+                         "Requires DHW circulation for Legionella safety"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        fixed_cost=500,
+        typical_savings_percent=3,
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=5,
+    ),
+
+    "pump_optimization": ECM(
+        id="pump_optimization",
+        name="Pump Speed Optimization",
+        name_sv="Pumpoptimering",
+        category=ECMCategory.OPERATIONAL,
+        description="Reduce circulation pump speeds. Many pumps run at full speed "
+                   "unnecessarily. Variable speed saves 30-50% pump electricity.",
+        parameters=[
+            ECMParameter("speed_reduction", [20, 30, 40], "%", "Speed reduction"),
+        ],
+        constraints=[
+            ECMConstraint("has_variable_speed_pumps", "eq", True,
+                         "Requires variable speed pumps or VFD"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        fixed_cost=2000,
+        typical_savings_percent=2,
+        affected_end_use="electricity",
+        disruption_level="none",
+        typical_lifetime_years=5,
+    ),
+
+    "bms_optimization": ECM(
+        id="bms_optimization",
+        name="BMS Tune-Up",
+        name_sv="Styr- och reglertrimning",
+        category=ECMCategory.OPERATIONAL,
+        description="Building Management System tune-up. Review all setpoints, schedules, "
+                   "alarms. Often finds 5-10% savings from drift and incorrect settings.",
+        parameters=[],
+        constraints=[
+            ECMConstraint("has_bms", "eq", True,
+                         "Requires Building Management System"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        fixed_cost=5000,  # Consultant analysis
+        typical_savings_percent=5,
+        affected_end_use="all",
+        disruption_level="none",
+        typical_lifetime_years=3,
+    ),
 }
 
 
@@ -392,3 +617,31 @@ class ECMCatalog:
     def by_end_use(self, end_use: str) -> List[ECM]:
         """Get ECMs affecting an end use."""
         return [ecm for ecm in self.ecms.values() if ecm.affected_end_use == end_use]
+
+
+# =============================================================================
+# CONVENIENCE FUNCTIONS AND ALIASES
+# =============================================================================
+
+# Alias for backward compatibility
+ECM_CATALOG = SWEDISH_ECM_CATALOG
+
+
+def get_all_ecms() -> List[ECM]:
+    """Get all ECMs as a list."""
+    return list(SWEDISH_ECM_CATALOG.values())
+
+
+def get_ecm(ecm_id: str) -> Optional[ECM]:
+    """Get an ECM by ID."""
+    return SWEDISH_ECM_CATALOG.get(ecm_id)
+
+
+def get_ecms_by_category(category: ECMCategory) -> List[ECM]:
+    """Get all ECMs in a category."""
+    return [ecm for ecm in SWEDISH_ECM_CATALOG.values() if ecm.category == category]
+
+
+def list_ecm_ids() -> List[str]:
+    """List all ECM IDs."""
+    return list(SWEDISH_ECM_CATALOG.keys())

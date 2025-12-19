@@ -11,7 +11,7 @@ Input: GeoJSON footprint, height, floors, WWR per facade
 Output: BuildingGeometry object with all calculated areas
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 import math
 
@@ -19,12 +19,13 @@ import math
 @dataclass
 class FacadeGeometry:
     """Geometry for a single facade orientation."""
-    orientation: str  # 'N', 'S', 'E', 'W', or angle in degrees
+    orientation: str  # 'N', 'S', 'E', 'W'
     wall_area_m2: float
     window_area_m2: float
     wwr: float  # Window-to-wall ratio (0-1)
-    azimuth_deg: float  # True azimuth angle
-    length_m: float  # Facade length
+    azimuth_deg: float  # Average azimuth angle (0=N, 90=E, 180=S, 270=W)
+    length_m: float  # Total facade length for this orientation
+    segment_count: int = 1  # Number of wall segments in this direction
 
 
 @dataclass
@@ -39,6 +40,16 @@ class RoofGeometry:
 
 
 @dataclass
+class WallSegment:
+    """Individual wall segment from footprint."""
+    start: Tuple[float, float]  # (x, y) in meters
+    end: Tuple[float, float]  # (x, y) in meters
+    length_m: float
+    azimuth_deg: float  # Direction wall faces (outward normal)
+    orientation: str  # N, S, E, W
+
+
+@dataclass
 class BuildingGeometry:
     """Complete building geometry."""
     # Basic dimensions
@@ -49,7 +60,7 @@ class BuildingGeometry:
     floor_height_m: float
 
     # Envelope
-    facades: List[FacadeGeometry]
+    facades: Dict[str, FacadeGeometry]  # Keyed by orientation
     roof: RoofGeometry
     ground_floor_area_m2: float
 
@@ -65,6 +76,9 @@ class BuildingGeometry:
     # Perimeter
     perimeter_m: float
 
+    # Raw segments (for debugging/visualization)
+    wall_segments: List[WallSegment] = field(default_factory=list)
+
 
 class BuildingGeometryCalculator:
     """
@@ -73,63 +87,415 @@ class BuildingGeometryCalculator:
     Usage:
         calculator = BuildingGeometryCalculator()
         geometry = calculator.calculate(
-            footprint_geojson=geojson_polygon,
+            footprint_coords=[(lon1, lat1), (lon2, lat2), ...],
             height_m=21.0,
             floors=7,
             wwr_by_orientation={'N': 0.15, 'S': 0.25, 'E': 0.20, 'W': 0.20}
         )
     """
 
-    def __init__(self):
-        pass
+    # Stockholm reference point for local projection
+    STOCKHOLM_REF_LAT = 59.3293
+    STOCKHOLM_REF_LON = 18.0686
+
+    def __init__(self, reference_lat: float = None, reference_lon: float = None):
+        """
+        Initialize calculator with optional reference point for coordinate conversion.
+
+        Args:
+            reference_lat: Latitude for local projection (default: Stockholm)
+            reference_lon: Longitude for local projection (default: Stockholm)
+        """
+        self.ref_lat = reference_lat or self.STOCKHOLM_REF_LAT
+        self.ref_lon = reference_lon or self.STOCKHOLM_REF_LON
 
     def calculate(
         self,
-        footprint_geojson: dict,
+        footprint_coords: List[Tuple[float, float]],
         height_m: float,
         floors: int,
-        wwr_by_orientation: Dict[str, float],
+        wwr_by_orientation: Dict[str, float] = None,
         roof_type: str = 'flat',
-        roof_slope_deg: float = 0.0
+        roof_slope_deg: float = 0.0,
     ) -> BuildingGeometry:
         """
         Calculate complete building geometry.
 
         Args:
-            footprint_geojson: GeoJSON Polygon or MultiPolygon
+            footprint_coords: List of (lon, lat) coordinates in WGS84
             height_m: Building height in meters
             floors: Number of floors
-            wwr_by_orientation: WWR for each cardinal direction
+            wwr_by_orientation: WWR for each cardinal direction {'N': 0.15, ...}
             roof_type: 'flat', 'pitched', 'gabled'
             roof_slope_deg: Roof slope in degrees (0 for flat)
 
         Returns:
             BuildingGeometry with all calculated values
         """
-        # TODO: Implement
-        # 1. Parse GeoJSON coordinates
-        # 2. Calculate footprint area using Shoelace formula
-        # 3. Calculate perimeter and segment lengths
-        # 4. Assign segments to cardinal orientations based on azimuth
-        # 5. Calculate wall areas = segment_length × height
-        # 6. Calculate window areas = wall_area × wwr
-        # 7. Calculate roof geometry
-        # 8. Sum up totals
-        raise NotImplementedError("Implement geometry calculation")
+        # Default WWR if not provided
+        if wwr_by_orientation is None:
+            wwr_by_orientation = {'N': 0.15, 'S': 0.25, 'E': 0.20, 'W': 0.20}
 
-    def _parse_footprint(self, geojson: dict) -> List[Tuple[float, float]]:
+        # 1. Convert WGS84 to local metric coordinates
+        local_coords = self._wgs84_to_local(footprint_coords)
+
+        # 2. Ensure polygon is closed
+        if local_coords[0] != local_coords[-1]:
+            local_coords.append(local_coords[0])
+
+        # 3. Calculate footprint area using Shoelace formula
+        footprint_area = self._calculate_polygon_area(local_coords)
+
+        # 4. Calculate perimeter and wall segments
+        segments = self._calculate_wall_segments(local_coords)
+        perimeter = sum(s.length_m for s in segments)
+
+        # 5. Group segments by cardinal orientation
+        segments_by_orientation = self._group_segments_by_orientation(segments)
+
+        # 6. Calculate wall and window areas per orientation
+        floor_height = height_m / floors
+        facades = {}
+
+        for orientation in ['N', 'S', 'E', 'W']:
+            orientation_segments = segments_by_orientation.get(orientation, [])
+            total_length = sum(s.length_m for s in orientation_segments)
+            wall_area = total_length * height_m
+
+            wwr = wwr_by_orientation.get(orientation, 0.15)
+            window_area = wall_area * wwr
+
+            # Calculate average azimuth for this orientation
+            if orientation_segments:
+                avg_azimuth = sum(s.azimuth_deg for s in orientation_segments) / len(orientation_segments)
+            else:
+                avg_azimuth = {'N': 0, 'E': 90, 'S': 180, 'W': 270}[orientation]
+
+            facades[orientation] = FacadeGeometry(
+                orientation=orientation,
+                wall_area_m2=wall_area,
+                window_area_m2=window_area,
+                wwr=wwr,
+                azimuth_deg=avg_azimuth,
+                length_m=total_length,
+                segment_count=len(orientation_segments),
+            )
+
+        # 7. Calculate totals
+        total_wall_area = sum(f.wall_area_m2 for f in facades.values())
+        total_window_area = sum(f.window_area_m2 for f in facades.values())
+        average_wwr = total_window_area / total_wall_area if total_wall_area > 0 else 0
+
+        # 8. Calculate roof geometry
+        roof = self._calculate_roof_geometry(
+            footprint_area=footprint_area,
+            roof_type=roof_type,
+            roof_slope_deg=roof_slope_deg,
+        )
+
+        # 9. Calculate gross floor area and volume
+        gross_floor_area = footprint_area * floors
+        volume = footprint_area * height_m
+
+        # 10. Calculate total envelope area
+        total_envelope_area = total_wall_area + roof.total_area_m2 + footprint_area
+
+        return BuildingGeometry(
+            footprint_area_m2=footprint_area,
+            gross_floor_area_m2=gross_floor_area,
+            height_m=height_m,
+            floors=floors,
+            floor_height_m=floor_height,
+            facades=facades,
+            roof=roof,
+            ground_floor_area_m2=footprint_area,
+            total_wall_area_m2=total_wall_area,
+            total_window_area_m2=total_window_area,
+            total_envelope_area_m2=total_envelope_area,
+            average_wwr=average_wwr,
+            volume_m3=volume,
+            perimeter_m=perimeter,
+            wall_segments=segments,
+        )
+
+    def calculate_from_geojson(
+        self,
+        geojson: dict,
+        height_m: float,
+        floors: int,
+        wwr_by_orientation: Dict[str, float] = None,
+        **kwargs,
+    ) -> BuildingGeometry:
+        """
+        Calculate geometry from a GeoJSON Polygon or Feature.
+
+        Args:
+            geojson: GeoJSON dict (Polygon, MultiPolygon, or Feature)
+            height_m: Building height
+            floors: Number of floors
+            wwr_by_orientation: WWR per direction
+
+        Returns:
+            BuildingGeometry
+        """
+        coords = self._parse_geojson(geojson)
+        return self.calculate(coords, height_m, floors, wwr_by_orientation, **kwargs)
+
+    def _parse_geojson(self, geojson: dict) -> List[Tuple[float, float]]:
         """Extract coordinate list from GeoJSON."""
-        raise NotImplementedError()
+        # Handle Feature wrapper
+        if geojson.get('type') == 'Feature':
+            geojson = geojson.get('geometry', {})
+
+        geom_type = geojson.get('type')
+        coords = geojson.get('coordinates', [])
+
+        if geom_type == 'Polygon':
+            # First ring is exterior
+            if coords and len(coords) > 0:
+                return [(c[0], c[1]) for c in coords[0]]
+        elif geom_type == 'MultiPolygon':
+            # Take first polygon
+            if coords and len(coords) > 0 and len(coords[0]) > 0:
+                return [(c[0], c[1]) for c in coords[0][0]]
+
+        raise ValueError(f"Unsupported GeoJSON geometry type: {geom_type}")
+
+    def _wgs84_to_local(
+        self,
+        coords: List[Tuple[float, float]],
+    ) -> List[Tuple[float, float]]:
+        """
+        Convert WGS84 (lon, lat) coordinates to local metric (x, y) coordinates.
+
+        Uses equirectangular projection centered on the building centroid.
+        Accurate enough for building-scale calculations in Sweden.
+
+        Args:
+            coords: List of (longitude, latitude) tuples
+
+        Returns:
+            List of (x, y) tuples in meters
+        """
+        if not coords:
+            return []
+
+        # Calculate centroid for reference
+        lons = [c[0] for c in coords]
+        lats = [c[1] for c in coords]
+        center_lon = sum(lons) / len(lons)
+        center_lat = sum(lats) / len(lats)
+
+        # Earth radius in meters
+        R = 6371000
+
+        # Convert to local coordinates
+        local_coords = []
+        for lon, lat in coords:
+            # Equirectangular projection
+            x = R * math.radians(lon - center_lon) * math.cos(math.radians(center_lat))
+            y = R * math.radians(lat - center_lat)
+            local_coords.append((x, y))
+
+        return local_coords
 
     def _calculate_polygon_area(self, coords: List[Tuple[float, float]]) -> float:
-        """Calculate area using Shoelace formula."""
-        raise NotImplementedError()
+        """
+        Calculate polygon area using the Shoelace formula.
 
-    def _segment_to_azimuth(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
-        """Calculate azimuth angle of a wall segment."""
-        raise NotImplementedError()
+        Args:
+            coords: List of (x, y) coordinates in meters (must be closed)
+
+        Returns:
+            Area in square meters (absolute value)
+        """
+        n = len(coords)
+        if n < 3:
+            return 0.0
+
+        area = 0.0
+        for i in range(n - 1):
+            x1, y1 = coords[i]
+            x2, y2 = coords[i + 1]
+            area += x1 * y2 - x2 * y1
+
+        return abs(area) / 2.0
+
+    def _calculate_wall_segments(
+        self,
+        coords: List[Tuple[float, float]],
+    ) -> List[WallSegment]:
+        """
+        Calculate wall segments from polygon coordinates.
+
+        For each edge, calculates:
+        - Length
+        - Azimuth (direction the wall faces, i.e., outward normal)
+        - Cardinal orientation
+
+        Args:
+            coords: List of (x, y) coordinates in meters
+
+        Returns:
+            List of WallSegment objects
+        """
+        segments = []
+
+        for i in range(len(coords) - 1):
+            p1 = coords[i]
+            p2 = coords[i + 1]
+
+            # Calculate length
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+            length = math.sqrt(dx * dx + dy * dy)
+
+            if length < 0.1:  # Skip very short segments
+                continue
+
+            # Calculate azimuth of the wall segment direction
+            # atan2(dx, dy) gives angle from north (y-axis)
+            segment_azimuth = math.degrees(math.atan2(dx, dy))
+            if segment_azimuth < 0:
+                segment_azimuth += 360
+
+            # The wall faces perpendicular to segment direction
+            # For a counter-clockwise polygon, the outward normal is 90° clockwise
+            wall_azimuth = (segment_azimuth + 90) % 360
+
+            # Determine cardinal orientation
+            orientation = self._azimuth_to_orientation(wall_azimuth)
+
+            segments.append(WallSegment(
+                start=p1,
+                end=p2,
+                length_m=length,
+                azimuth_deg=wall_azimuth,
+                orientation=orientation,
+            ))
+
+        return segments
 
     def _azimuth_to_orientation(self, azimuth: float) -> str:
-        """Convert azimuth to cardinal direction (N/S/E/W)."""
-        # N: 315-45, E: 45-135, S: 135-225, W: 225-315
-        raise NotImplementedError()
+        """
+        Convert azimuth angle to cardinal direction.
+
+        Azimuth: 0° = North, 90° = East, 180° = South, 270° = West
+
+        Args:
+            azimuth: Angle in degrees (0-360)
+
+        Returns:
+            Cardinal direction: 'N', 'E', 'S', or 'W'
+        """
+        # Normalize to 0-360
+        azimuth = azimuth % 360
+
+        # N: 315-45 (centered on 0)
+        # E: 45-135 (centered on 90)
+        # S: 135-225 (centered on 180)
+        # W: 225-315 (centered on 270)
+        if azimuth >= 315 or azimuth < 45:
+            return 'N'
+        elif 45 <= azimuth < 135:
+            return 'E'
+        elif 135 <= azimuth < 225:
+            return 'S'
+        else:  # 225 <= azimuth < 315
+            return 'W'
+
+    def _group_segments_by_orientation(
+        self,
+        segments: List[WallSegment],
+    ) -> Dict[str, List[WallSegment]]:
+        """Group wall segments by their cardinal orientation."""
+        grouped = {'N': [], 'E': [], 'S': [], 'W': []}
+        for segment in segments:
+            grouped[segment.orientation].append(segment)
+        return grouped
+
+    def _calculate_roof_geometry(
+        self,
+        footprint_area: float,
+        roof_type: str,
+        roof_slope_deg: float,
+    ) -> RoofGeometry:
+        """
+        Calculate roof geometry for PV potential.
+
+        Args:
+            footprint_area: Ground floor area in m²
+            roof_type: 'flat', 'pitched', 'gabled'
+            roof_slope_deg: Roof slope in degrees
+
+        Returns:
+            RoofGeometry object
+        """
+        if roof_type == 'flat' or roof_slope_deg < 5:
+            return RoofGeometry(
+                total_area_m2=footprint_area,
+                flat_area_m2=footprint_area,
+                pitched_area_m2=0,
+                primary_slope_deg=0,
+                primary_azimuth_deg=180,  # Doesn't matter for flat
+                available_pv_area_m2=footprint_area * 0.7,  # 70% usable after setbacks
+            )
+
+        elif roof_type == 'pitched':
+            # Pitched roof increases total area by cos(slope)
+            slope_rad = math.radians(roof_slope_deg)
+            total_area = footprint_area / math.cos(slope_rad)
+            return RoofGeometry(
+                total_area_m2=total_area,
+                flat_area_m2=0,
+                pitched_area_m2=total_area,
+                primary_slope_deg=roof_slope_deg,
+                primary_azimuth_deg=180,  # Assume south-facing
+                available_pv_area_m2=total_area * 0.5,  # Only south-facing half
+            )
+
+        elif roof_type == 'gabled':
+            # Gabled roof: two pitched surfaces
+            slope_rad = math.radians(roof_slope_deg)
+            total_area = footprint_area / math.cos(slope_rad)
+            return RoofGeometry(
+                total_area_m2=total_area,
+                flat_area_m2=0,
+                pitched_area_m2=total_area,
+                primary_slope_deg=roof_slope_deg,
+                primary_azimuth_deg=180,
+                available_pv_area_m2=total_area * 0.4,  # Less usable due to orientation
+            )
+
+        else:
+            # Default to flat
+            return RoofGeometry(
+                total_area_m2=footprint_area,
+                flat_area_m2=footprint_area,
+                pitched_area_m2=0,
+                primary_slope_deg=0,
+                primary_azimuth_deg=180,
+                available_pv_area_m2=footprint_area * 0.7,
+            )
+
+
+def calculate_building_geometry(
+    footprint_coords: List[Tuple[float, float]],
+    height_m: float,
+    floors: int,
+    wwr_by_orientation: Dict[str, float] = None,
+) -> BuildingGeometry:
+    """
+    Convenience function to calculate building geometry.
+
+    Args:
+        footprint_coords: List of (lon, lat) in WGS84
+        height_m: Building height
+        floors: Number of floors
+        wwr_by_orientation: WWR per direction
+
+    Returns:
+        BuildingGeometry object
+    """
+    calculator = BuildingGeometryCalculator()
+    return calculator.calculate(footprint_coords, height_m, floors, wwr_by_orientation)

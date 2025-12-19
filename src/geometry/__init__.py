@@ -9,8 +9,24 @@ Extracts and calculates:
 - Shading factors from neighboring buildings and trees
 """
 
-from .building_geometry import BuildingGeometry
+from .building_geometry import (
+    BuildingGeometry,
+    BuildingGeometryCalculator,
+    FacadeGeometry,
+    RoofGeometry,
+    WallSegment,
+    calculate_building_geometry,
+)
 from .pv_potential import PVPotentialCalculator
 from .thermal_mass import ThermalMassCalculator
 
-__all__ = ['BuildingGeometry', 'PVPotentialCalculator', 'ThermalMassCalculator']
+__all__ = [
+    'BuildingGeometry',
+    'BuildingGeometryCalculator',
+    'FacadeGeometry',
+    'RoofGeometry',
+    'WallSegment',
+    'calculate_building_geometry',
+    'PVPotentialCalculator',
+    'ThermalMassCalculator',
+]

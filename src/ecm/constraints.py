@@ -24,19 +24,17 @@ class BuildingContext:
     - Archetype matching
     - Geometry calculations
     """
-    # Basic info
+    # Required fields (no defaults)
     construction_year: int
     building_type: str  # 'multi_family', 'single_family', etc.
-
-    # Envelope
     facade_material: str  # 'brick', 'concrete', 'render', 'wood', 'glass'
+    heating_system: str  # 'district', 'electric', 'heat_pump_ground', etc.
+    ventilation_type: str  # 'natural', 'f', 'ftx'
+
+    # Optional fields with defaults
     heritage_listed: bool = False
     current_window_u: float = 2.0  # W/m²K
     current_infiltration_ach: float = 0.10
-
-    # HVAC
-    heating_system: str  # 'district', 'electric', 'heat_pump_ground', etc.
-    ventilation_type: str  # 'natural', 'f', 'ftx'
     current_heat_recovery: float = 0.0  # 0 for no HR
     has_hydronic_distribution: bool = True
 

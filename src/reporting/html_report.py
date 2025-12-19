@@ -1,0 +1,1319 @@
+"""
+HTML Report Generator for BRF Building Analysis.
+
+Generates professional reports showing:
+- Building summary and characteristics
+- Existing energy measures
+- Applicable ECMs with savings potential
+- Simulation results comparison
+- Financial analysis and recommendations
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+import json
+
+from src.analysis.package_generator import PackageGenerator, ECMPackage, ECM_COSTS_PER_M2
+
+
+@dataclass
+class ECMResult:
+    """Result for a single ECM."""
+    id: str
+    name: str
+    category: str
+    baseline_kwh_m2: float
+    result_kwh_m2: float
+    savings_kwh_m2: float
+    savings_percent: float
+    estimated_cost_sek: float
+    simple_payback_years: float
+
+
+@dataclass
+class MaintenancePlanData:
+    """Maintenance plan data for report."""
+    total_investment_sek: float = 0
+    total_savings_30yr_sek: float = 0
+    net_present_value_sek: float = 0
+    break_even_year: int = 0
+    final_fund_balance_sek: float = 0
+    max_loan_used_sek: float = 0
+    projections: List[Dict] = field(default_factory=list)  # Year-by-year projections
+    zero_cost_annual_savings: float = 0
+
+
+@dataclass
+class EffektvaktData:
+    """Effektvakt (peak shaving) analysis data."""
+    current_el_peak_kw: float = 0
+    current_fv_peak_kw: float = 0
+    optimized_el_peak_kw: float = 0
+    optimized_fv_peak_kw: float = 0
+    el_peak_reduction_kw: float = 0
+    fv_peak_reduction_kw: float = 0
+    annual_el_savings_sek: float = 0
+    annual_fv_savings_sek: float = 0
+    total_annual_savings_sek: float = 0
+    pre_heat_hours: float = 0
+    pre_heat_temp_c: float = 0
+    coast_duration_hours: float = 0
+    requires_bms: bool = True
+    manual_possible: bool = False
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ReportData:
+    """Data for generating a report."""
+    # Building info
+    building_name: str
+    address: str
+    construction_year: int
+    building_type: str
+    facade_material: str
+    atemp_m2: float
+    floors: int
+    energy_class: str
+    declared_heating_kwh_m2: float
+
+    # Analysis results
+    baseline_heating_kwh_m2: float
+    existing_measures: List[str]
+    applicable_ecms: List[str]
+    excluded_ecms: List[Dict[str, str]]
+    ecm_results: List[ECMResult]
+
+    # Solar potential
+    existing_pv_m2: float = 0
+    remaining_pv_m2: float = 0
+    additional_pv_kwp: float = 0
+
+    # ECM Packages
+    packages: List[ECMPackage] = None
+
+    # Maintenance Plan (Long-term financial projection)
+    maintenance_plan: MaintenancePlanData = None
+
+    # Effektvakt (Peak demand optimization)
+    effektvakt: EffektvaktData = None
+
+    # BRF Financials (for context)
+    num_apartments: int = 0
+    current_fund_sek: float = 0
+    annual_energy_cost_sek: float = 0
+
+    # Metadata
+    analysis_date: str = ""
+    analysis_duration_seconds: float = 0
+
+
+HTML_TEMPLATE = '''<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Energianalys - {building_name}</title>
+    <style>
+        :root {{
+            --primary: #2563eb;
+            --success: #16a34a;
+            --warning: #d97706;
+            --danger: #dc2626;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }}
+
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: var(--gray-700);
+            background: var(--gray-100);
+            padding: 2rem;
+        }}
+
+        .container {{
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }}
+
+        header {{
+            background: linear-gradient(135deg, var(--primary), #1e40af);
+            color: white;
+            padding: 2rem;
+        }}
+
+        header h1 {{
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+        }}
+
+        header p {{
+            opacity: 0.9;
+            font-size: 1rem;
+        }}
+
+        .content {{
+            padding: 2rem;
+        }}
+
+        section {{
+            margin-bottom: 2rem;
+        }}
+
+        h2 {{
+            color: var(--gray-900);
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--gray-200);
+        }}
+
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }}
+
+        .stat-card {{
+            background: var(--gray-100);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }}
+
+        .stat-card .value {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary);
+        }}
+
+        .stat-card .label {{
+            font-size: 0.875rem;
+            color: var(--gray-700);
+        }}
+
+        .measure-list {{
+            list-style: none;
+        }}
+
+        .measure-list li {{
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+
+        .measure-list li:last-child {{
+            border-bottom: none;
+        }}
+
+        .badge {{
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }}
+
+        .badge-success {{
+            background: #dcfce7;
+            color: var(--success);
+        }}
+
+        .badge-warning {{
+            background: #fef3c7;
+            color: var(--warning);
+        }}
+
+        .badge-danger {{
+            background: #fee2e2;
+            color: var(--danger);
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }}
+
+        th, td {{
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--gray-200);
+        }}
+
+        th {{
+            background: var(--gray-100);
+            font-weight: 600;
+            color: var(--gray-900);
+        }}
+
+        tr:hover {{
+            background: var(--gray-100);
+        }}
+
+        .savings-positive {{
+            color: var(--success);
+            font-weight: 600;
+        }}
+
+        .savings-neutral {{
+            color: var(--gray-700);
+        }}
+
+        .chart-bar {{
+            height: 20px;
+            background: var(--gray-200);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 0.25rem;
+        }}
+
+        .chart-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, var(--success), #22c55e);
+            border-radius: 4px;
+        }}
+
+        .recommendation {{
+            background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+        }}
+
+        .recommendation h3 {{
+            color: var(--success);
+            margin-bottom: 0.5rem;
+        }}
+
+        footer {{
+            background: var(--gray-100);
+            padding: 1rem 2rem;
+            text-align: center;
+            font-size: 0.875rem;
+            color: var(--gray-700);
+        }}
+
+        /* Package cards */
+        .package-cards {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }}
+
+        .package-card {{
+            border: 2px solid var(--gray-200);
+            border-radius: 12px;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+
+        .package-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+        }}
+
+        .package-card.basic {{
+            border-color: #93c5fd;
+        }}
+
+        .package-card.standard {{
+            border-color: #86efac;
+        }}
+
+        .package-card.premium {{
+            border-color: #fcd34d;
+        }}
+
+        .package-header {{
+            padding: 1rem;
+            text-align: center;
+        }}
+
+        .package-card.basic .package-header {{
+            background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+        }}
+
+        .package-card.standard .package-header {{
+            background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+        }}
+
+        .package-card.premium .package-header {{
+            background: linear-gradient(135deg, #fef3c7, #fde68a);
+        }}
+
+        .package-header h3 {{
+            font-size: 1.25rem;
+            margin-bottom: 0.25rem;
+            color: var(--gray-900);
+        }}
+
+        .package-header .package-savings {{
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--success);
+        }}
+
+        .package-body {{
+            padding: 1rem;
+        }}
+
+        .package-body ul {{
+            list-style: none;
+            margin-bottom: 1rem;
+        }}
+
+        .package-body li {{
+            padding: 0.375rem 0;
+            font-size: 0.875rem;
+            border-bottom: 1px solid var(--gray-200);
+        }}
+
+        .package-body li:last-child {{
+            border-bottom: none;
+        }}
+
+        .package-footer {{
+            background: var(--gray-100);
+            padding: 1rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }}
+
+        .package-footer .label {{
+            color: var(--gray-700);
+        }}
+
+        .package-footer .value {{
+            font-weight: 600;
+            text-align: right;
+        }}
+
+        /* Maintenance Plan styles */
+        .cash-flow-table {{
+            width: 100%;
+            font-size: 0.85rem;
+        }}
+
+        .cash-flow-table th {{
+            background: var(--primary);
+            color: white;
+            padding: 0.5rem;
+            text-align: right;
+        }}
+
+        .cash-flow-table th:first-child {{
+            text-align: left;
+        }}
+
+        .cash-flow-table td {{
+            text-align: right;
+            padding: 0.4rem 0.5rem;
+        }}
+
+        .cash-flow-table td:first-child {{
+            text-align: left;
+            font-weight: 600;
+        }}
+
+        .cash-flow-table tr.investment-row {{
+            background: #fef3c7;
+        }}
+
+        .cash-flow-table tr.warning-row {{
+            background: #fee2e2;
+        }}
+
+        .plan-summary {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }}
+
+        .plan-metric {{
+            background: linear-gradient(135deg, var(--gray-100), #e5e7eb);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }}
+
+        .plan-metric.positive {{
+            background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+        }}
+
+        .plan-metric .metric-value {{
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--primary);
+        }}
+
+        .plan-metric.positive .metric-value {{
+            color: var(--success);
+        }}
+
+        .plan-metric .metric-label {{
+            font-size: 0.75rem;
+            color: var(--gray-700);
+        }}
+
+        /* Effektvakt styles */
+        .effektvakt-grid {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin: 1rem 0;
+        }}
+
+        .effektvakt-card {{
+            background: var(--gray-100);
+            border-radius: 8px;
+            padding: 1rem;
+        }}
+
+        .effektvakt-card h4 {{
+            font-size: 0.875rem;
+            color: var(--gray-700);
+            margin-bottom: 0.5rem;
+        }}
+
+        .peak-comparison {{
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+
+        .peak-value {{
+            font-size: 1.5rem;
+            font-weight: 700;
+        }}
+
+        .peak-value.before {{
+            color: var(--danger);
+        }}
+
+        .peak-value.after {{
+            color: var(--success);
+        }}
+
+        .peak-arrow {{
+            font-size: 1.25rem;
+            color: var(--gray-700);
+        }}
+
+        .peak-reduction {{
+            background: #dcfce7;
+            color: var(--success);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }}
+
+        .strategy-list {{
+            list-style: none;
+            margin-top: 1rem;
+        }}
+
+        .strategy-list li {{
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: space-between;
+        }}
+
+        .strategy-list li:last-child {{
+            border-bottom: none;
+        }}
+
+        .cascade-visual {{
+            background: linear-gradient(90deg, #3b82f6, #10b981, #22c55e);
+            height: 8px;
+            border-radius: 4px;
+            margin: 1rem 0;
+        }}
+
+        @media print {{
+            body {{
+                background: white;
+                padding: 0;
+            }}
+            .container {{
+                box-shadow: none;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>{building_name}</h1>
+            <p>{address}</p>
+        </header>
+
+        <div class="content">
+            <section>
+                <h2>Byggnadsöversikt</h2>
+                <div class="grid">
+                    <div class="stat-card">
+                        <div class="value">{construction_year}</div>
+                        <div class="label">Byggnadsår</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{atemp_m2:,.0f} m²</div>
+                        <div class="label">Atemp</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{floors}</div>
+                        <div class="label">Våningar</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{energy_class}</div>
+                        <div class="label">Energiklass</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{declared_heating_kwh_m2:.0f} kWh/m²</div>
+                        <div class="label">Deklarerad energi</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{facade_material}</div>
+                        <div class="label">Fasadmaterial</div>
+                    </div>
+                </div>
+            </section>
+
+            <section>
+                <h2>Befintliga åtgärder ({num_existing})</h2>
+                <ul class="measure-list">
+                    {existing_measures_html}
+                </ul>
+            </section>
+
+            <section>
+                <h2>ECM-analys</h2>
+                <div class="grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 1rem;">
+                    <div class="stat-card">
+                        <div class="value" style="color: var(--success);">{num_applicable}</div>
+                        <div class="label">Tillämpliga åtgärder</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" style="color: var(--warning);">{num_already_done}</div>
+                        <div class="label">Redan genomförda</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" style="color: var(--danger);">{num_not_applicable}</div>
+                        <div class="label">Ej tillämpliga</div>
+                    </div>
+                </div>
+
+                {ecm_results_table}
+            </section>
+
+            {solar_section}
+
+            {packages_section}
+
+            {effektvakt_section}
+
+            {maintenance_plan_section}
+
+            <section>
+                <h2>Sammanfattning</h2>
+                <div class="recommendation">
+                    <h3>Rekommendation</h3>
+                    <p>{recommendation_text}</p>
+                </div>
+            </section>
+        </div>
+
+        <footer>
+            <p>Genererad av Raiden - Swedish Building Energy Analysis | {analysis_date}</p>
+        </footer>
+    </div>
+</body>
+</html>'''
+
+
+class HTMLReportGenerator:
+    """Generate HTML reports for building energy analysis."""
+
+    def __init__(self):
+        pass
+
+    def generate(self, data: ReportData, output_path: Optional[Path] = None) -> str:
+        """
+        Generate HTML report from analysis data.
+
+        Args:
+            data: Report data
+            output_path: Optional path to save HTML file
+
+        Returns:
+            HTML string
+        """
+        # Format existing measures
+        existing_html = ""
+        for measure in data.existing_measures:
+            existing_html += f'<li><span class="badge badge-success">✓</span> {self._format_measure_name(measure)}</li>\n'
+
+        if not data.existing_measures:
+            existing_html = '<li><em>Inga befintliga åtgärder identifierade</em></li>'
+
+        # Format ECM results table
+        ecm_table = self._format_ecm_table(data)
+
+        # Format solar section
+        solar_section = ""
+        if data.remaining_pv_m2 > 0:
+            solar_section = f'''
+            <section>
+                <h2>Solpotential</h2>
+                <div class="grid">
+                    <div class="stat-card">
+                        <div class="value">{data.existing_pv_m2:.0f} m²</div>
+                        <div class="label">Befintlig solcellsyta</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{data.remaining_pv_m2:.0f} m²</div>
+                        <div class="label">Tillgänglig takyta</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value">{data.additional_pv_kwp:.0f} kWp</div>
+                        <div class="label">Potentiell kapacitet</div>
+                    </div>
+                </div>
+            </section>
+            '''
+
+        # Generate recommendation
+        recommendation = self._generate_recommendation(data)
+
+        # Count ECM categories
+        num_already_done = len([e for e in data.excluded_ecms if 'already' in e.get('reason', '').lower()])
+        num_not_applicable = len(data.excluded_ecms) - num_already_done
+
+        # Generate packages section
+        packages_section = self._format_packages_section(data)
+
+        # Generate effektvakt section
+        effektvakt_section = self._format_effektvakt_section(data)
+
+        # Generate maintenance plan section
+        maintenance_plan_section = self._format_maintenance_plan_section(data)
+
+        # Format HTML
+        html = HTML_TEMPLATE.format(
+            building_name=data.building_name,
+            address=data.address,
+            construction_year=data.construction_year,
+            atemp_m2=data.atemp_m2,
+            floors=data.floors,
+            energy_class=data.energy_class,
+            declared_heating_kwh_m2=data.declared_heating_kwh_m2,
+            facade_material=data.facade_material.title(),
+            num_existing=len(data.existing_measures),
+            existing_measures_html=existing_html,
+            num_applicable=len(data.applicable_ecms),
+            num_already_done=num_already_done,
+            num_not_applicable=num_not_applicable,
+            ecm_results_table=ecm_table,
+            solar_section=solar_section,
+            packages_section=packages_section,
+            effektvakt_section=effektvakt_section,
+            maintenance_plan_section=maintenance_plan_section,
+            recommendation_text=recommendation,
+            analysis_date=data.analysis_date or datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+
+        if output_path:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html)
+
+        return html
+
+    def _format_measure_name(self, measure: str) -> str:
+        """Format measure ID to readable name."""
+        names = {
+            'heat_pump_ground': 'Bergvärmepump',
+            'heat_pump_exhaust': 'Frånluftsvärmepump',
+            'solar_pv': 'Solceller',
+            'ftx_system': 'FTX-ventilation',
+            'heat_recovery': 'Värmeåtervinning',
+            'window_replacement': 'Moderna fönster',
+            'wall_insulation': 'Tilläggsisolering väggar',
+            'roof_insulation': 'Tilläggsisolering tak',
+        }
+        return names.get(measure, measure.replace('_', ' ').title())
+
+    def _format_packages_section(self, data: ReportData) -> str:
+        """Format ECM packages as HTML cards with Steg 0 (zero-cost) first."""
+        if not data.packages:
+            return ''
+
+        # Separate zero-cost (Steg 0) from capital packages
+        zero_cost_packages = []
+        capital_packages = []
+
+        for pkg in data.packages:
+            if 'zero' in pkg.id.lower() or 'steg0' in pkg.id.lower():
+                zero_cost_packages.append(pkg)
+            else:
+                capital_packages.append(pkg)
+
+        result_html = ''
+
+        # === STEG 0: Zero-Cost Section (DO THIS FIRST) ===
+        if zero_cost_packages:
+            zero_cost_cards = ''
+            for pkg in zero_cost_packages:
+                ecm_list = ''
+                for ecm in pkg.ecms:
+                    # Zero-cost ECMs may have 0% thermal savings but estimated cost savings
+                    savings_note = f'{ecm.individual_savings_percent:.0f}%' if ecm.individual_savings_percent > 0 else 'kostnadsbesparing'
+                    ecm_list += f'<li>{ecm.name} ({savings_note})</li>\n'
+
+                pkg_name = pkg.name_sv if hasattr(pkg, 'name_sv') else pkg.name
+                description = pkg.description_sv if hasattr(pkg, 'description_sv') else pkg.description
+
+                zero_cost_cards += f'''
+                <div class="package-card zero-cost" style="border-color: #10b981; background: linear-gradient(135deg, #ecfdf5, #d1fae5);">
+                    <div class="package-header" style="background: linear-gradient(135deg, #10b981, #059669); color: white;">
+                        <h3>{pkg_name} <span class="badge" style="background: white; color: #059669;">GÖR DETTA FÖRST!</span></h3>
+                        <div class="package-savings" style="color: white;">~5-15%</div>
+                        <div style="opacity: 0.9;">{description}</div>
+                    </div>
+                    <div class="package-body">
+                        <ul>
+                            {ecm_list}
+                        </ul>
+                    </div>
+                    <div class="package-footer" style="background: #ecfdf5;">
+                        <span class="label">Investering:</span>
+                        <span class="value">{pkg.total_cost_sek:,.0f} SEK</span>
+                        <span class="label">Typisk återbetalning:</span>
+                        <span class="value">{"< 6 månader" if pkg.total_cost_sek < 20000 else "< 1 år"}</span>
+                        <span class="label">Risk:</span>
+                        <span class="value">Ingen</span>
+                        <span class="label">Störning:</span>
+                        <span class="value">Ingen</span>
+                    </div>
+                </div>
+                '''
+
+            result_html += f'''
+            <section style="margin-bottom: 2rem;">
+                <h2 style="color: #059669;">🎯 Steg 0: Nollkostnadsåtgärder</h2>
+                <p style="margin-bottom: 1rem; color: var(--gray-700); background: #ecfdf5; padding: 1rem; border-radius: 8px; border-left: 4px solid #10b981;">
+                    <strong>Börja här!</strong> Dessa åtgärder kräver minimal eller ingen investering och ger omedelbar besparing.
+                    Typiskt 5-15% reduktion av energikostnader genom optimering av befintliga system.
+                </p>
+                <div class="package-cards">
+                    {zero_cost_cards}
+                </div>
+            </section>
+            '''
+
+        # === CAPITAL PACKAGES (Steg 1-3) ===
+        if capital_packages:
+            cards_html = ''
+            is_simulated = False
+
+            for pkg in capital_packages:
+                # Build ECM list
+                ecm_list = ''
+                for ecm in pkg.ecms:
+                    ecm_list += f'<li>{ecm.name} ({ecm.individual_savings_percent:.0f}%)</li>\n'
+
+                # Handle both SimulatedPackage (new) and ECMPackage (old) formats
+                if hasattr(pkg, 'simulated_savings_percent'):
+                    is_simulated = True
+                    savings_pct = pkg.simulated_savings_percent
+                    interaction = pkg.interaction_factor
+                    sum_savings = pkg.sum_individual_savings_percent
+                    annual_savings = pkg.annual_savings_sek
+                    description = pkg.description_sv if hasattr(pkg, 'description_sv') else pkg.description
+                    pkg_name = pkg.name_sv if hasattr(pkg, 'name_sv') else pkg.name
+                    status_badge = '<span class="badge badge-success">SIMULERAD</span>' if pkg.simulation_success else '<span class="badge badge-warning">ESTIMERAD</span>'
+
+                    interaction_row = f'''
+                        <span class="label">Summa enskilda:</span>
+                        <span class="value">{sum_savings:.0f}%</span>
+                        <span class="label">Samverkanseffekt:</span>
+                        <span class="value">{interaction:.0%}</span>
+                    '''
+                else:
+                    savings_pct = pkg.combined_savings_percent
+                    annual_savings = pkg.annual_cost_savings_sek
+                    description = pkg.description
+                    pkg_name = pkg.name
+                    status_badge = ''
+                    interaction_row = ''
+
+                # Determine card style based on package type
+                card_class = 'basic' if 'steg1' in pkg.id or 'basic' in pkg.id else \
+                            'standard' if 'steg2' in pkg.id or 'standard' in pkg.id else \
+                            'premium' if 'steg3' in pkg.id or 'premium' in pkg.id else ''
+
+                cards_html += f'''
+                <div class="package-card {card_class}">
+                    <div class="package-header">
+                        <h3>{pkg_name} {status_badge}</h3>
+                        <div class="package-savings">-{savings_pct:.0f}%</div>
+                        <div>{description}</div>
+                    </div>
+                    <div class="package-body">
+                        <ul>
+                            {ecm_list}
+                        </ul>
+                    </div>
+                    <div class="package-footer">
+                        <span class="label">Investering:</span>
+                        <span class="value">{pkg.total_cost_sek:,.0f} SEK</span>
+                        <span class="label">Årlig besparing:</span>
+                        <span class="value">{annual_savings:,.0f} SEK</span>
+                        <span class="label">Återbetalningstid:</span>
+                        <span class="value">{pkg.simple_payback_years:.1f} år</span>
+                        <span class="label">CO₂-reduktion:</span>
+                        <span class="value">{pkg.co2_reduction_kg_m2:.1f} kg/m²</span>
+                        {interaction_row}
+                    </div>
+                </div>
+                '''
+
+            explanation = "Paket simuleras med EnergyPlus för faktiska samverkanseffekter." if is_simulated else \
+                         "Kombinerade besparingar uppskattas med 70% samverkanseffekt."
+
+            result_html += f'''
+            <section>
+                <h2>💰 Investeringspaket (Steg 1-3)</h2>
+                <p style="margin-bottom: 1rem; color: var(--gray-700);">
+                    {explanation} Välj paket baserat på budget och ambitionsnivå.
+                </p>
+                <div class="package-cards">
+                    {cards_html}
+                </div>
+            </section>
+            '''
+
+        return result_html
+
+    def _format_effektvakt_section(self, data: ReportData) -> str:
+        """Format effektvakt (peak demand optimization) section."""
+        if not data.effektvakt:
+            return ''
+
+        eff = data.effektvakt
+
+        # Build notes list
+        notes_html = ''
+        for note in eff.notes:
+            notes_html += f'<li>{note}</li>\n'
+
+        return f'''
+        <section>
+            <h2>⚡ Effektvakt - Toppeffektoptimering</h2>
+            <p style="margin-bottom: 1rem; color: var(--gray-700);">
+                Använd byggnadens termiska massa för att jämna ut effekttoppar och sänka effektavgiften.
+            </p>
+
+            <div class="effektvakt-grid">
+                <div class="effektvakt-card">
+                    <h4>Eleffekt</h4>
+                    <div class="peak-comparison">
+                        <span class="peak-value before">{eff.current_el_peak_kw:.0f} kW</span>
+                        <span class="peak-arrow">→</span>
+                        <span class="peak-value after">{eff.optimized_el_peak_kw:.0f} kW</span>
+                        <span class="peak-reduction">-{eff.el_peak_reduction_kw:.0f} kW</span>
+                    </div>
+                    <p style="font-size: 0.875rem; margin-top: 0.5rem;">
+                        Besparing: <strong>{eff.annual_el_savings_sek:,.0f} SEK/år</strong>
+                    </p>
+                </div>
+
+                <div class="effektvakt-card">
+                    <h4>Fjärrvärmeeffekt</h4>
+                    <div class="peak-comparison">
+                        <span class="peak-value before">{eff.current_fv_peak_kw:.0f} kW</span>
+                        <span class="peak-arrow">→</span>
+                        <span class="peak-value after">{eff.optimized_fv_peak_kw:.0f} kW</span>
+                        <span class="peak-reduction">-{eff.fv_peak_reduction_kw:.0f} kW</span>
+                    </div>
+                    <p style="font-size: 0.875rem; margin-top: 0.5rem;">
+                        Besparing: <strong>{eff.annual_fv_savings_sek:,.0f} SEK/år</strong>
+                    </p>
+                </div>
+            </div>
+
+            <div class="stat-card" style="background: linear-gradient(135deg, #dcfce7, #bbf7d0); margin: 1rem 0;">
+                <div class="value" style="color: var(--success);">{eff.total_annual_savings_sek:,.0f} SEK/år</div>
+                <div class="label">Total effektvaktsbesparing</div>
+            </div>
+
+            <h3 style="font-size: 1rem; margin-top: 1.5rem;">Strategi</h3>
+            <ul class="strategy-list">
+                <li>
+                    <span>Förvärmningstid</span>
+                    <span><strong>{eff.pre_heat_hours:.1f} timmar</strong> före höglast</span>
+                </li>
+                <li>
+                    <span>Temperaturhöjning</span>
+                    <span><strong>+{eff.pre_heat_temp_c:.1f}°C</strong> vid förvärmning</span>
+                </li>
+                <li>
+                    <span>Seglingstid</span>
+                    <span><strong>{eff.coast_duration_hours:.1f} timmar</strong> utan aktiv värme</span>
+                </li>
+                <li>
+                    <span>Kräver BMS</span>
+                    <span>{'Ja' if eff.requires_bms else 'Nej (manuellt möjligt)'}</span>
+                </li>
+            </ul>
+
+            <div style="margin-top: 1rem; padding: 1rem; background: var(--gray-100); border-radius: 8px;">
+                <h4 style="font-size: 0.875rem; margin-bottom: 0.5rem;">Noteringar</h4>
+                <ul style="font-size: 0.875rem; padding-left: 1.5rem; color: var(--gray-700);">
+                    {notes_html}
+                </ul>
+            </div>
+        </section>
+        '''
+
+    def _format_maintenance_plan_section(self, data: ReportData) -> str:
+        """Format maintenance plan (long-term cash flow) section."""
+        if not data.maintenance_plan:
+            return ''
+
+        plan = data.maintenance_plan
+
+        # Build cash flow table rows (first 10 years)
+        rows_html = ''
+        for proj in plan.projections[:10]:
+            year = proj.get('year', '')
+            fund_start = proj.get('fund_start_sek', 0)
+            investment = proj.get('investment_sek', 0)
+            savings = proj.get('energy_savings_sek', 0)
+            fund_end = proj.get('fund_end_sek', 0)
+            loan = proj.get('loan_balance_sek', 0)
+            ecms = proj.get('ecm_investments', [])
+
+            row_class = 'investment-row' if investment > 0 else ''
+            if proj.get('fund_warning', False):
+                row_class = 'warning-row'
+
+            ecm_note = f" ({', '.join(ecms[:2])})" if ecms else ''
+
+            rows_html += f'''
+            <tr class="{row_class}">
+                <td>{year}</td>
+                <td>{fund_start:,.0f}</td>
+                <td>{investment:,.0f}</td>
+                <td style="color: var(--success);">{savings:,.0f}</td>
+                <td>{fund_end:,.0f}</td>
+                <td>{loan:,.0f}</td>
+                <td style="font-size: 0.75rem;">{ecm_note}</td>
+            </tr>
+            '''
+
+        return f'''
+        <section>
+            <h2>📊 Underhållsplan - Kassaflödesanalys</h2>
+            <p style="margin-bottom: 1rem; color: var(--gray-700);">
+                Långsiktig kassaflödesprojektion med energiåtgärder integrerade i underhållsplanen.
+                <strong>Strategi: Kassaflödeskaskad</strong> - använd snabba besparingar för att finansiera större investeringar.
+            </p>
+
+            <div class="cascade-visual"></div>
+
+            <div class="plan-summary">
+                <div class="plan-metric positive">
+                    <div class="metric-value">{plan.zero_cost_annual_savings:,.0f} SEK</div>
+                    <div class="metric-label">Steg 0 besparing/år</div>
+                </div>
+                <div class="plan-metric">
+                    <div class="metric-value">{plan.total_investment_sek:,.0f} SEK</div>
+                    <div class="metric-label">Total investering</div>
+                </div>
+                <div class="plan-metric positive">
+                    <div class="metric-value">{plan.total_savings_30yr_sek:,.0f} SEK</div>
+                    <div class="metric-label">Total besparing (30 år)</div>
+                </div>
+                <div class="plan-metric positive">
+                    <div class="metric-value">{plan.net_present_value_sek:,.0f} SEK</div>
+                    <div class="metric-label">Nuvärde (NPV)</div>
+                </div>
+                <div class="plan-metric">
+                    <div class="metric-value">{plan.break_even_year}</div>
+                    <div class="metric-label">Break-even år</div>
+                </div>
+                <div class="plan-metric">
+                    <div class="metric-value">{plan.max_loan_used_sek:,.0f} SEK</div>
+                    <div class="metric-label">Max lån använt</div>
+                </div>
+            </div>
+
+            <h3 style="font-size: 1rem; margin: 1.5rem 0 0.5rem;">År-för-år kassaflöde</h3>
+            <div style="overflow-x: auto;">
+                <table class="cash-flow-table">
+                    <thead>
+                        <tr>
+                            <th>År</th>
+                            <th>Fond start</th>
+                            <th>Investering</th>
+                            <th>Besparing/år</th>
+                            <th>Fond slut</th>
+                            <th>Lån</th>
+                            <th>Åtgärder</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="recommendation" style="margin-top: 1rem;">
+                <h3>💡 Nyckelinsikt</h3>
+                <p>
+                    Genom att börja med Steg 0 (nollkostnadsåtgärder) skapas <strong>{plan.zero_cost_annual_savings:,.0f} SEK/år</strong>
+                    i omedelbar besparing. Dessa pengar kan sedan användas för att finansiera större åtgärder
+                    utan att belasta avgifterna. Planen visar att break-even uppnås {plan.break_even_year} och
+                    att slutbalansen efter 30 år blir <strong>{plan.final_fund_balance_sek:,.0f} SEK</strong>.
+                </p>
+            </div>
+        </section>
+        '''
+
+    def _format_ecm_table(self, data: ReportData) -> str:
+        """Format ECM results as HTML table."""
+        if not data.ecm_results:
+            return '<p><em>Inga simuleringsresultat tillgängliga</em></p>'
+
+        rows = ""
+        has_led_note = False
+
+        for ecm in sorted(data.ecm_results, key=lambda x: x.savings_percent, reverse=True):
+            ecm_id = ecm.id.lower()
+            note = ""
+
+            if ecm.savings_percent > 0:
+                savings_class = "savings-positive"
+                savings_text = f"-{ecm.savings_percent:.0f}%"
+                bar_width = min(ecm.savings_percent, 100)
+            elif ecm.savings_percent < -1:  # Heating increased
+                savings_class = "savings-neutral"
+                savings_text = f"+{abs(ecm.savings_percent):.0f}%"
+                bar_width = 0
+                # Special note for LED lighting
+                if 'led' in ecm_id or 'lighting' in ecm_id:
+                    note = " *"
+                    has_led_note = True
+            else:
+                savings_class = "savings-neutral"
+                savings_text = "0%"
+                bar_width = 0
+
+            rows += f'''
+            <tr>
+                <td>{ecm.name}{note}</td>
+                <td>{ecm.result_kwh_m2:.1f} kWh/m²</td>
+                <td class="{savings_class}">{savings_text}</td>
+                <td>
+                    <div class="chart-bar">
+                        <div class="chart-fill" style="width: {bar_width}%;"></div>
+                    </div>
+                </td>
+            </tr>
+            '''
+
+        # LED explanation note
+        led_note = ""
+        if has_led_note:
+            led_note = '''
+            <p style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--gray-700); font-style: italic;">
+                * LED-belysning minskar elförbrukningen med 40-60%, men mindre interna värmetillskott
+                ökar värmebehovet i nordiskt klimat. Nettoeffekten är oftast positiv då elbesparingen
+                överstiger den ökade värmekostnaden.
+            </p>
+            '''
+
+        return f'''
+        <table>
+            <thead>
+                <tr>
+                    <th>Åtgärd</th>
+                    <th>Resultat</th>
+                    <th>Besparing</th>
+                    <th>Visualisering</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows}
+            </tbody>
+        </table>
+        <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--gray-700);">
+            Baseline: {data.baseline_heating_kwh_m2:.1f} kWh/m²/år
+        </p>
+        {led_note}
+        '''
+
+    def _generate_recommendation(self, data: ReportData) -> str:
+        """Generate recommendation text based on analysis."""
+        if not data.ecm_results:
+            return f"Denna byggnad har redan genomfört {len(data.existing_measures)} energiåtgärder. Ytterligare {len(data.applicable_ecms)} åtgärder är möjliga att implementera."
+
+        # Find best ECMs
+        positive_ecms = [e for e in data.ecm_results if e.savings_percent > 0]
+
+        if not positive_ecms:
+            return f"Denna byggnad är redan mycket energieffektiv med {len(data.existing_measures)} genomförda åtgärder. Ytterligare förbättringar ger marginell effekt."
+
+        best_ecms = sorted(positive_ecms, key=lambda x: x.savings_percent, reverse=True)[:3]
+        best_names = [e.name for e in best_ecms]
+        total_potential = sum(e.savings_percent for e in best_ecms) * 0.7  # 70% interaction factor
+
+        return f"Rekommenderade åtgärder: {', '.join(best_names)}. Kombinerat kan dessa åtgärder minska energianvändningen med upp till {total_potential:.0f}% (med hänsyn till samverkanseffekter). Byggnaden har redan {len(data.existing_measures)} genomförda energiåtgärder."
+
+
+def generate_report(
+    building_data: dict,
+    simulation_results: dict,
+    filter_result: dict,
+    output_path: Optional[Path] = None,
+    baseline_heating: Optional[float] = None,
+    packages: Optional[List] = None,
+) -> str:
+    """
+    Convenience function to generate report from analysis results.
+
+    Args:
+        building_data: Enriched building JSON data
+        simulation_results: Dict of ECM ID -> SimulationResult
+        filter_result: Result from SmartECMFilter
+        output_path: Optional path to save HTML file
+        baseline_heating: Baseline heating from simulation (kWh/m2)
+        packages: Optional list of SimulatedPackage from PackageSimulator
+
+    Returns:
+        HTML string
+    """
+    summary = building_data.get('original_summary', {})
+    building = building_data.get('buildings', [{}])[0]
+    pdf_data = building_data.get('pdf_extracted_data', {})
+    solar = building.get('envelope', {}).get('solar_potential', {})
+
+    # Build ECM results
+    ecm_results = []
+    baseline = baseline_heating or summary.get('energy_performance_kwh_per_sqm', 100)
+
+    for ecm_id, result in simulation_results.items():
+        if result.success and result.parsed_results:
+            # Find ECM object - handle both dict and object formats
+            ecm_obj = None
+            for e in filter_result.get('applicable', []):
+                if hasattr(e, 'id') and e.id == ecm_id:
+                    ecm_obj = e
+                    break
+                elif isinstance(e, dict) and e.get('id') == ecm_id:
+                    ecm_obj = e.get('ecm', e)
+                    break
+
+            result_kwh = result.parsed_results.heating_kwh_m2
+            savings = baseline - result_kwh
+            savings_pct = (savings / baseline) * 100 if baseline > 0 else 0
+
+            ecm_results.append(ECMResult(
+                id=ecm_id,
+                name=ecm_obj.name if ecm_obj else ecm_id,
+                category=str(ecm_obj.category.value) if ecm_obj and hasattr(ecm_obj.category, 'value') else 'unknown',
+                baseline_kwh_m2=baseline,
+                result_kwh_m2=result_kwh,
+                savings_kwh_m2=savings,
+                savings_percent=savings_pct,
+                estimated_cost_sek=0,  # TODO: Add cost calculation
+                simple_payback_years=0,  # TODO: Add payback calculation
+            ))
+
+    # Build existing measures list
+    existing = []
+    for item in filter_result.get('already_done', []):
+        if 'reason' in item:
+            # Extract measure from reason
+            reason = item['reason']
+            if 'implemented:' in reason:
+                measure = reason.split('implemented:')[-1].strip()
+                existing.append(measure)
+
+    # Build excluded list
+    excluded = []
+    for item in filter_result.get('already_done', []):
+        excluded.append({'ecm': item['ecm'].name, 'reason': item.get('reason', '')})
+    for item in filter_result.get('not_applicable', []):
+        reasons = item.get('reasons', [])
+        reason = reasons[0][1] if reasons else 'Technical constraint'
+        excluded.append({'ecm': item['ecm'].name, 'reason': reason})
+
+    # Use provided packages or generate estimated ones
+    atemp_m2 = summary.get('total_heated_area_sqm', 0)
+    final_packages = packages  # Use simulated packages if provided
+    if not final_packages and ecm_results and atemp_m2 > 0:
+        # Fall back to estimated packages if no simulated ones provided
+        ecm_data_for_packages = [
+            {
+                'id': ecm.id,
+                'name': ecm.name,
+                'savings_percent': ecm.savings_percent,
+            }
+            for ecm in ecm_results
+        ]
+        package_generator = PackageGenerator()
+        final_packages = package_generator.generate_packages(
+            ecm_results=ecm_data_for_packages,
+            baseline_kwh_m2=baseline,
+            atemp_m2=atemp_m2,
+        )
+
+    data = ReportData(
+        building_name=building_data.get('brf_name', 'Unknown Building'),
+        address=f"{building.get('address', 'Unknown')}, {summary.get('location', 'Sweden')}",
+        construction_year=summary.get('construction_year', 0),
+        building_type=summary.get('building_type', 'Multi-family'),
+        facade_material=building.get('envelope', {}).get('facade_material', 'Unknown'),
+        atemp_m2=atemp_m2,
+        floors=summary.get('floors', 0) or 4,
+        energy_class=summary.get('energy_class', 'Unknown'),
+        declared_heating_kwh_m2=pdf_data.get('specific_energy_kwh_sqm', summary.get('energy_performance_kwh_per_sqm', 0)),
+        baseline_heating_kwh_m2=baseline,
+        existing_measures=existing,
+        applicable_ecms=[e.id for e in filter_result.get('applicable', [])],
+        excluded_ecms=excluded,
+        ecm_results=ecm_results,
+        packages=final_packages,
+        existing_pv_m2=solar.get('existing_pv_sqm', 0),
+        remaining_pv_m2=solar.get('remaining_suitable_area_sqm', 0),
+        additional_pv_kwp=solar.get('remaining_capacity_kwp', 0),
+        analysis_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+
+    generator = HTMLReportGenerator()
+    return generator.generate(data, output_path)

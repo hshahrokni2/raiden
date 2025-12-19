@@ -121,7 +121,8 @@ class ThermalMassCalculator:
         structure_material: ConstructionMaterial,
         floor_thickness_m: float = 0.20,
         internal_walls_area_m2: float = 0.0,
-        exposed_ceiling: bool = True
+        exposed_ceiling: bool = True,
+        u_value_average: float = 0.30
     ) -> ThermalMass:
         """
         Calculate building thermal mass.
@@ -133,19 +134,74 @@ class ThermalMassCalculator:
             floor_thickness_m: Concrete floor slab thickness
             internal_walls_area_m2: Additional internal thermal mass
             exposed_ceiling: Whether ceiling concrete is exposed
+            u_value_average: Average envelope U-value (for time constant)
 
         Returns:
             ThermalMass assessment
         """
-        # TODO: Implement
-        # 1. Get material properties
-        # 2. Calculate floor slab mass (exposed surfaces)
-        # 3. Calculate internal wall mass
-        # 4. Calculate effective mass (first 10cm)
-        # 5. Calculate heat capacity
-        # 6. Estimate time constant
-        # 7. Classify mass level
-        raise NotImplementedError("Implement thermal mass calculation")
+        # Get material properties
+        props = MATERIAL_DATABASE.get(
+            structure_material,
+            MATERIAL_DATABASE[ConstructionMaterial.CONCRETE]
+        )
+
+        floor_area_per_floor = floor_area_m2 / floors if floors > 0 else floor_area_m2
+
+        # Calculate floor slab mass
+        # Each floor has top (floor) and bottom (ceiling) exposed surfaces
+        # Effective depth is limited to EFFECTIVE_DEPTH_M
+        effective_floor_depth = min(floor_thickness_m, self.EFFECTIVE_DEPTH_M)
+        floor_slab_volume_m3 = floor_area_per_floor * floor_thickness_m * floors
+
+        # Effective volume (mass participating in diurnal cycling)
+        # Floor surface + ceiling surface (if exposed)
+        surfaces_per_floor = 2 if exposed_ceiling else 1
+        effective_volume_m3 = floor_area_per_floor * effective_floor_depth * surfaces_per_floor * floors
+
+        # Internal walls thermal mass
+        internal_wall_thickness = 0.15  # Assume 150mm internal walls
+        internal_wall_volume_m3 = internal_walls_area_m2 * internal_wall_thickness
+        effective_internal_volume = internal_walls_area_m2 * min(internal_wall_thickness, self.EFFECTIVE_DEPTH_M * 2)
+
+        # Total volumes
+        total_volume_m3 = floor_slab_volume_m3 + internal_wall_volume_m3
+        total_effective_volume_m3 = effective_volume_m3 + effective_internal_volume
+
+        # Calculate masses
+        total_mass_kg = total_volume_m3 * props.density_kg_m3
+        effective_mass_kg = total_effective_volume_m3 * props.density_kg_m3
+
+        # Calculate heat capacities
+        volumetric_cp = props.volumetric_heat_capacity  # J/m³K
+        total_heat_capacity_j_k = total_volume_m3 * volumetric_cp
+        effective_heat_capacity_j_k = total_effective_volume_m3 * volumetric_cp
+
+        # Convert to MJ/K
+        total_heat_capacity_mj_k = total_heat_capacity_j_k / 1e6
+        effective_heat_capacity_mj_k = effective_heat_capacity_j_k / 1e6
+
+        # Heat capacity per floor area (kJ/m²K)
+        heat_capacity_per_area = (effective_heat_capacity_j_k / 1000) / floor_area_m2
+
+        # Time constant τ = C / UA
+        # Approximate envelope area
+        envelope_area_m2 = floor_area_m2 * 0.5  # Rough approximation
+        ua_value = envelope_area_m2 * u_value_average  # W/K
+        time_constant_seconds = effective_heat_capacity_j_k / ua_value if ua_value > 0 else 0
+        time_constant_hours = time_constant_seconds / 3600
+
+        # Classify mass level
+        mass_class = self._classify_mass(heat_capacity_per_area)
+
+        return ThermalMass(
+            total_mass_kg=total_mass_kg,
+            effective_mass_kg=effective_mass_kg,
+            total_heat_capacity_mj_k=total_heat_capacity_mj_k,
+            effective_heat_capacity_mj_k=effective_heat_capacity_mj_k,
+            heat_capacity_per_floor_area_kj_m2_k=heat_capacity_per_area,
+            time_constant_hours=time_constant_hours,
+            mass_class=mass_class,
+        )
 
     def _classify_mass(self, heat_capacity_per_area: float) -> str:
         """Classify thermal mass as light/medium/heavy."""

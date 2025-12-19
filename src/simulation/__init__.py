@@ -7,7 +7,14 @@ Features:
 - Error handling for E+ crashes
 """
 
-from .runner import SimulationRunner, SimulationResult
-from .results import ResultsParser, AnnualResults
+from .runner import SimulationRunner, SimulationResult, run_simulation
+from .results import ResultsParser, AnnualResults, parse_results
 
-__all__ = ['SimulationRunner', 'SimulationResult', 'ResultsParser', 'AnnualResults']
+__all__ = [
+    'SimulationRunner',
+    'SimulationResult',
+    'run_simulation',
+    'ResultsParser',
+    'AnnualResults',
+    'parse_results',
+]
