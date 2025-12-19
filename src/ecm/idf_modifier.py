@@ -269,6 +269,17 @@ class IDFModifier:
             return self._apply_pump_optimization(idf_content, params)
         elif ecm_id == "bms_optimization":
             return self._apply_bms_optimization(idf_content, params)
+        # Swedish-specific ECMs
+        elif ecm_id == "exhaust_air_heat_pump":
+            return self._apply_exhaust_air_heat_pump(idf_content, params)
+        elif ecm_id == "ground_source_heat_pump":
+            return self._apply_ground_source_heat_pump(idf_content, params)
+        elif ecm_id == "district_heating_optimization":
+            return self._apply_dh_optimization(idf_content, params)
+        elif ecm_id == "solar_thermal":
+            return self._apply_solar_thermal(idf_content, params)
+        elif ecm_id == "low_flow_fixtures":
+            return self._apply_low_flow_fixtures(idf_content, params)
         else:
             # Unknown ECM, return unchanged
             logger.warning(f"Unknown ECM '{ecm_id}', no modifications applied")
@@ -1077,6 +1088,204 @@ Schedule:Compact,
 ! Typical savings: 5% total energy
 ! Includes: setpoint corrections, schedule alignment, alarm review
 ! Note: Savings from eliminating drift and incorrect settings
+
+'''
+        return comment + idf_content
+
+    # =========================================================================
+    # SWEDISH-SPECIFIC ECM HANDLERS
+    # =========================================================================
+
+    def _apply_exhaust_air_heat_pump(
+        self,
+        idf_content: str,
+        params: Dict[str, Any]
+    ) -> str:
+        """
+        Apply Exhaust Air Heat Pump (Frånluftsvärmepump).
+
+        Extracts heat from exhaust air for heating/DHW.
+        Modeled by enabling heat recovery and adjusting effectiveness.
+        Typical Swedish FVP: NIBE F470/F750 with COP 3.0-3.5.
+        """
+        cop = params.get('cop', 3.0)
+        capacity_kw = params.get('capacity_kw', 10)
+
+        # FVP effectively adds heat recovery to exhaust-only systems
+        # Model as high-effectiveness heat recovery
+        # COP 3.0 ≈ extracting ~67% of exhaust heat + work input
+        effectiveness = min(0.90, 0.50 + (cop - 2.5) * 0.10)
+
+        # Enable heat recovery (change from None to Sensible)
+        modified = re.sub(
+            r'None,\s*!-\s*Heat Recovery Type',
+            f'Sensible,                        !- Heat Recovery Type (ECM: FVP installed)',
+            idf_content
+        )
+
+        # Set high effectiveness for FVP
+        def set_fvp_effectiveness(match):
+            return f'{effectiveness:.2f};                         !- Sensible Heat Recovery Effectiveness (ECM: FVP)'
+
+        modified = re.sub(
+            r'[\d.]+;\s*!-\s*Sensible Heat Recovery Effectiveness',
+            set_fvp_effectiveness,
+            modified
+        )
+
+        comment = f'''
+! ==== ECM Applied: Exhaust Air Heat Pump (Frånluftsvärmepump) ====
+! Type: NIBE F470/F750 or equivalent
+! Capacity: {capacity_kw} kW
+! COP: {cop}
+! Modeled effectiveness: {effectiveness:.0%}
+! Expected savings: 40-60% heating + DHW
+! Note: Cannot combine with FTX (competing heat source)
+
+'''
+        return comment + modified
+
+    def _apply_ground_source_heat_pump(
+        self,
+        idf_content: str,
+        params: Dict[str, Any]
+    ) -> str:
+        """
+        Apply Ground Source Heat Pump (Bergvärmepump).
+
+        High-efficiency heating from geothermal source.
+        Modeled by significantly reducing heating energy demand.
+        """
+        cop = params.get('cop', 4.5)
+        capacity_kw = params.get('capacity_kw', 20)
+
+        # GSHP covers most of heating load with high COP
+        # Model as reduced heating load (1/COP of original)
+        # Simplified: lower heating setpoint slightly to represent efficiency
+        heating_reduction_factor = 1.0 / cop
+
+        # Also enable heat recovery to model the integrated system
+        modified = re.sub(
+            r'None,\s*!-\s*Heat Recovery Type',
+            f'Sensible,                        !- Heat Recovery Type (ECM: GSHP system)',
+            idf_content
+        )
+
+        # Set very high effectiveness to model GSHP system performance
+        def set_gshp_effectiveness(match):
+            return f'0.85;                         !- Sensible Heat Recovery Effectiveness (ECM: GSHP)'
+
+        modified = re.sub(
+            r'[\d.]+;\s*!-\s*Sensible Heat Recovery Effectiveness',
+            set_gshp_effectiveness,
+            modified
+        )
+
+        comment = f'''
+! ==== ECM Applied: Ground Source Heat Pump (Bergvärmepump) ====
+! Capacity: {capacity_kw} kW
+! Seasonal COP: {cop}
+! Borehole depth: {params.get('borehole_depth_m', 150)} m
+! Primary energy reduction: ~{(1-heating_reduction_factor)*100:.0f}%
+! Expected delivered energy savings: 60-70%
+! Note: Best with low-temperature distribution
+
+'''
+        return comment + modified
+
+    def _apply_dh_optimization(
+        self,
+        idf_content: str,
+        params: Dict[str, Any]
+    ) -> str:
+        """
+        District Heating Optimization (Fjärrvärmeoptimering).
+
+        Operational measure to improve substation efficiency.
+        Lower return temperature and higher delta-T.
+        Primarily affects cost, not thermal simulation.
+        """
+        target_return = params.get('target_return_temp_c', 35)
+        target_delta_t = params.get('target_delta_t_c', 40)
+
+        # Minor efficiency improvement from better heat transfer
+        # Model as slight reduction in heating setpoint during occupied hours
+        def reduce_setpoint(match):
+            current = float(match.group(1))
+            new_setpoint = current - 0.5  # 0.5°C reduction from better control
+            return f'{new_setpoint:.1f}'
+
+        # Careful pattern to only match heating setpoints
+        # This is a mild change representing improved control
+        pattern = r'Until: \d+:\d+,\s*(2[0-3]\.?\d*|21\.?\d*)'  # Match setpoints 20-23°C
+        modified = re.sub(pattern, reduce_setpoint, idf_content)
+
+        comment = f'''
+! ==== ECM Applied: District Heating Optimization ====
+! Target return temperature: {target_return}°C
+! Target delta-T: {target_delta_t}°C
+! Expected savings: 5-10% cost (tariff improvement)
+! Note: Primary benefit is cost reduction from better DH tariff
+! Swedish DH utilities penalize high return temperatures
+
+'''
+        return comment + idf_content  # Use original - DH optimization is mostly cost
+
+    def _apply_solar_thermal(
+        self,
+        idf_content: str,
+        params: Dict[str, Any]
+    ) -> str:
+        """
+        Solar Thermal Collectors (Solfångare).
+
+        Reduces DHW heating load by solar preheating.
+        Not directly modeled in IdealLoads - comment only.
+        """
+        area_m2 = params.get('area_m2', 40)
+        collector_type = params.get('collector_type', 'flat_plate')
+
+        # Estimate yield: ~400-500 kWh/m²/year in Stockholm
+        annual_yield_kwh = area_m2 * 450 if collector_type == 'flat_plate' else area_m2 * 550
+
+        comment = f'''
+! ==== ECM Applied: Solar Thermal Collectors ====
+! Collector area: {area_m2} m²
+! Collector type: {collector_type}
+! Estimated annual yield: {annual_yield_kwh:.0f} kWh
+! Expected DHW savings: 30-50%
+! Note: Solar thermal not modeled in IdealLoads
+! Savings applied in post-processing
+
+'''
+        return comment + idf_content
+
+    def _apply_low_flow_fixtures(
+        self,
+        idf_content: str,
+        params: Dict[str, Any]
+    ) -> str:
+        """
+        Low-Flow Water Fixtures (Snålspolande armaturer).
+
+        Reduces DHW consumption by 20-40%.
+        Not directly modeled in heating - affects DHW only.
+        """
+        showerhead_flow = params.get('showerhead_flow_lpm', 8)
+        faucet_flow = params.get('faucet_flow_lpm', 5)
+
+        # Standard flows: showerhead 12 L/min, faucet 8 L/min
+        # Reduction percentage
+        shower_reduction = (1 - showerhead_flow / 12) * 100
+        faucet_reduction = (1 - faucet_flow / 8) * 100
+
+        comment = f'''
+! ==== ECM Applied: Low-Flow Water Fixtures ====
+! Showerhead flow: {showerhead_flow} L/min (reduction: {shower_reduction:.0f}%)
+! Faucet flow: {faucet_flow} L/min (reduction: {faucet_reduction:.0f}%)
+! Expected DHW savings: 20-40%
+! Note: Very low cost, easy implementation
+! Savings applied in post-processing
 
 '''
         return comment + idf_content

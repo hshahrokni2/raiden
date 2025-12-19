@@ -586,6 +586,156 @@ SWEDISH_ECM_CATALOG: Dict[str, ECM] = {
         disruption_level="none",
         typical_lifetime_years=3,
     ),
+
+    # =========================================================================
+    # SWEDISH-SPECIFIC ECMs (High-impact measures common in Sweden)
+    # =========================================================================
+
+    "exhaust_air_heat_pump": ECM(
+        id="exhaust_air_heat_pump",
+        name="Exhaust Air Heat Pump (FVP)",
+        name_sv="Frånluftsvärmepump (FVP)",
+        category=ECMCategory.HVAC,
+        description="""
+        Extract heat from exhaust ventilation air for heating and DHW.
+        Very common retrofit for F-ventilated Swedish multi-family buildings.
+        Uses NIBE F470/F750 or similar. COP 3.0-3.5.
+        Cannot combine with FTX (competing for same heat source).
+        """,
+        parameters=[
+            ECMParameter("capacity_kw", [5, 8, 12, 16], "kW", "Heat pump capacity"),
+            ECMParameter("cop", [3.0, 3.2, 3.5], "", "Coefficient of Performance"),
+        ],
+        constraints=[
+            ECMConstraint("ventilation_type", "in", ["f", "exhaust"],
+                         "Requires F-ventilation (exhaust only) system"),
+            ECMConstraint("has_ftx", "eq", False,
+                         "Cannot combine with FTX - both use exhaust air"),
+        ],
+        cost_per_unit=12000,  # SEK per kW capacity
+        cost_unit="kW",
+        fixed_cost=40000,  # Installation base cost
+        typical_savings_percent=50,  # Heating + DHW savings
+        affected_end_use="heating",
+        disruption_level="medium",
+        typical_lifetime_years=20,
+    ),
+
+    "ground_source_heat_pump": ECM(
+        id="ground_source_heat_pump",
+        name="Ground Source Heat Pump",
+        name_sv="Bergvärmepump",
+        category=ECMCategory.HVAC,
+        description="""
+        Install ground source heat pump with borehole(s).
+        High efficiency (COP 4-5) but requires drilling.
+        Best for buildings without district heating.
+        Works well with low-temperature distribution (underfloor/radiator fans).
+        """,
+        parameters=[
+            ECMParameter("capacity_kw", [10, 15, 20, 30, 50], "kW", "Heat pump capacity"),
+            ECMParameter("cop", [4.0, 4.5, 5.0], "", "Seasonal COP"),
+            ECMParameter("borehole_depth_m", [100, 150, 200], "m", "Borehole depth"),
+        ],
+        constraints=[
+            ECMConstraint("heating_system", "not_in", ["heat_pump_ground"],
+                         "Already has ground source heat pump"),
+            ECMConstraint("heating_system", "not_in", ["district"],
+                         "District heating is typically more cost-effective"),
+        ],
+        cost_per_unit=10000,  # SEK per kW
+        cost_unit="kW",
+        fixed_cost=80000,  # Borehole drilling (~150m @ 300 SEK/m + setup)
+        typical_savings_percent=65,  # Primary energy savings
+        affected_end_use="heating",
+        disruption_level="high",
+        typical_lifetime_years=25,
+    ),
+
+    "district_heating_optimization": ECM(
+        id="district_heating_optimization",
+        name="District Heating Optimization",
+        name_sv="Fjärrvärmeoptimering",
+        category=ECMCategory.OPERATIONAL,
+        description="""
+        Optimize district heating substation for better efficiency:
+        - Lower return temperature (many utilities penalize high return)
+        - Higher delta-T (more efficient heat transfer)
+        - Two-stage DHW preheating (use return water)
+        - Correct sizing of heat exchangers
+
+        Target: Return temp < 35°C, Delta-T > 40°C
+        Often zero/low cost with significant tariff benefits.
+        """,
+        parameters=[
+            ECMParameter("target_return_temp_c", [30, 35, 40], "°C", "Target return temperature"),
+            ECMParameter("target_delta_t_c", [35, 40, 45], "°C", "Target delta-T"),
+        ],
+        constraints=[
+            ECMConstraint("heating_system", "eq", "district",
+                         "Requires district heating connection"),
+        ],
+        cost_per_unit=0,
+        cost_unit="building",
+        fixed_cost=15000,  # Substation adjustment + consultant
+        typical_savings_percent=8,  # Cost savings from better tariff + less energy
+        affected_end_use="heating",
+        disruption_level="none",
+        typical_lifetime_years=10,
+    ),
+
+    "solar_thermal": ECM(
+        id="solar_thermal",
+        name="Solar Thermal Collectors",
+        name_sv="Solfångare",
+        category=ECMCategory.RENEWABLE,
+        description="""
+        Install solar thermal collectors for DHW preheating.
+        Well-suited for Swedish multi-family buildings with large DHW demand.
+        Covers 30-50% of DHW energy in Stockholm climate.
+        Best combined with accumulator tank.
+        """,
+        parameters=[
+            ECMParameter("area_m2", [20, 40, 60, 100], "m²", "Collector area"),
+            ECMParameter("collector_type", ["flat_plate", "vacuum_tube"], "", "Collector technology"),
+        ],
+        constraints=[
+            ECMConstraint("has_roof_access", "eq", True,
+                         "Requires suitable roof area for collectors"),
+        ],
+        cost_per_unit=8000,  # SEK per m² collector
+        cost_unit="m²",
+        fixed_cost=30000,  # Tank, piping, controls
+        typical_savings_percent=35,  # DHW energy savings
+        affected_end_use="dhw",
+        disruption_level="low",
+        typical_lifetime_years=25,
+    ),
+
+    "low_flow_fixtures": ECM(
+        id="low_flow_fixtures",
+        name="Low-Flow Water Fixtures",
+        name_sv="Snålspolande armaturer",
+        category=ECMCategory.OPERATIONAL,
+        description="""
+        Install low-flow showerheads and faucet aerators.
+        Very low cost, easy to implement, immediate savings.
+        Reduces both water and energy for DHW.
+        """,
+        parameters=[
+            ECMParameter("showerhead_flow_lpm", [6, 8, 10], "L/min", "Showerhead flow rate"),
+            ECMParameter("faucet_flow_lpm", [4, 6], "L/min", "Faucet flow rate"),
+        ],
+        constraints=[
+            # No hard constraints - applicable everywhere
+        ],
+        cost_per_unit=500,  # SEK per apartment
+        cost_unit="apartment",
+        typical_savings_percent=25,  # DHW energy savings
+        affected_end_use="dhw",
+        disruption_level="none",
+        typical_lifetime_years=10,
+    ),
 }
 
 
