@@ -4,15 +4,81 @@
 **Estimated Effort:** 2-3 weeks
 **Author:** Architecture Review
 **Date:** 2025-12-19
+**Last Updated:** 2025-12-19 (Claude Opus 4.5 Analysis)
 
 ---
 
-## Executive Summary
+## 🎯 ULTRATHINK EXECUTIVE SUMMARY
 
-This document provides implementation instructions for upgrading Raiden's building simulation pipeline based on research from KTH's MUBES (Massive Urban Building Energy Simulations) project. The two major improvements are:
+### Current State (Raiden v0.2.0)
+- **35,800 LOC** across 71 Python files
+- **40 Swedish archetypes** (TABULA/EPISCOPE) with construction-era detection
+- **22 ECMs** with constraint-aware filtering
+- **37,489 Stockholm buildings** in GeoJSON with 167 properties each
+- **209 tests passing** with EnergyPlus 25.1.0 integration
+- Deterministic calibration achieving 10% gap to energy declarations
 
-1. **GeomEppy Integration** - Replace manual IDF generation with geometry-preserving library
-2. **Surrogate-Based Bayesian Calibration** - Replace deterministic calibration with uncertainty-quantified approach
+### Strategic Gap Analysis
+
+| Capability | Current | Target | Gap Severity |
+|------------|---------|--------|--------------|
+| Footprint geometry | Rectangle approximation | Actual polygon | **CRITICAL** - loses L/star/courtyard shapes |
+| Calibration | Deterministic (~30s) | Bayesian with CI (~5s) | **HIGH** - no uncertainty quantification |
+| ECM count | 22 | 50+ | **MEDIUM** - missing Swedish-specific (FVP, DH opt) |
+| Cost data | Hardcoded estimates | BeBo/Wikells sourced | **MEDIUM** - affects ROI accuracy |
+| Scalability | Single building | 37k batch | **LOW** - architecture supports, needs optimization |
+
+### Three Transformational Upgrades
+
+This document provides implementation instructions for upgrading Raiden's building simulation pipeline based on research from KTH's MUBES (Massive Urban Building Energy Simulations) project:
+
+#### 1. **GeomEppy Integration** (Week 1) - CRITICAL
+Replace manual IDF generation (~1,000 lines) with geometry-preserving library (~200 lines).
+- **Why**: Current `generator.py:148-168` converts ALL footprints to rectangles, losing lamellhus variants, stjärnhus, slutet kvarter
+- **Impact**: Accurate surface areas → accurate heat loss → accurate savings predictions
+- **Risk**: GeomEppy uses forked eppy - verify compatibility with existing `idf_parser.py`
+
+#### 2. **Surrogate-Based Bayesian Calibration** (Week 2-3) - HIGH
+Replace deterministic calibration with uncertainty-quantified approach.
+- **Why**: Current calibration gives point estimates; BRF boards need confidence intervals for investment decisions
+- **Impact**: "Roof insulation saves 5-12% (90% CI)" vs "saves 8%"
+- **Compute**: One-time ~8h training (40 archetypes × 100 samples); per-building <5s
+
+#### 3. **ECM Catalog Expansion** (Ongoing) - MEDIUM
+Expand from 22 to 50+ ECMs with Swedish-specific measures.
+- **Why**: Missing high-impact Swedish measures: frånluftsvärmepump (40-60% savings), district heating optimization
+- **Impact**: More relevant recommendations, especially for F-ventilated buildings
+
+### ROI of This Investment
+
+| Metric | Before | After | Business Value |
+|--------|--------|-------|----------------|
+| Geometry accuracy | ~70% (rectangles) | ~95% (actual) | Correct wall/window areas |
+| Prediction uncertainty | None | 90% CI on all outputs | Board-level confidence |
+| Calibration speed | 30s (E+ run) | 5s (surrogate) | 37k buildings/day possible |
+| ECM coverage | 22 (generic) | 50+ (Swedish-specific) | FVP alone = major upgrade |
+
+### Critical Path
+
+```
+Week 1: GeomEppy
+├── Add dependency, create generator_v2.py
+├── Create minimal IDF template
+├── Test against existing generator (5% tolerance)
+└── Update address_pipeline to use v2
+
+Week 2: Surrogate Training (can run overnight)
+├── Implement surrogate.py (Gaussian Process)
+├── Generate Latin Hypercube samples (100 per archetype)
+├── Run batch E+ simulations (~8h with 8 workers)
+└── Train and validate GP models (R² > 0.95)
+
+Week 3: Bayesian Calibration
+├── Implement bayesian.py (ABC-SMC)
+├── Create calibrator_v2.py interface
+├── Add uncertainty to ECM predictions
+└── Update CLI/API with --uncertainty flag
+```
 
 These changes will:
 - Preserve actual building footprint geometry (not rectangle approximation)
@@ -2591,3 +2657,98 @@ savings = result.predict_ecm_savings("wall_external_insulation")
 print(f"Savings: {savings['savings_fraction']['mean']:.1%}")
 print(f"90% CI: {savings['savings_fraction']['ci_90']}")
 ```
+
+---
+
+## 🧠 ULTRATHINK: Strategic Prioritization Matrix
+
+### Decision Framework: What to Build First
+
+Given limited resources, here's the prioritization based on **impact × feasibility**:
+
+```
+                    HIGH IMPACT
+                         │
+    ┌────────────────────┼────────────────────┐
+    │                    │                    │
+    │  [2] BAYESIAN      │  [1] GEOMEPPY     │
+    │  CALIBRATION       │  INTEGRATION       │
+    │                    │                    │
+    │  Impact: 9/10      │  Impact: 10/10    │
+    │  Effort: 8/10      │  Effort: 5/10     │
+    │  Risk: Medium      │  Risk: Low        │
+    │                    │                    │
+LOW ├────────────────────┼────────────────────┤ HIGH
+FEAS│                    │                    │ FEAS
+    │  [4] COST DB       │  [3] ECM EXPAND   │
+    │  INTEGRATION       │  (Phase 1)        │
+    │                    │                    │
+    │  Impact: 6/10      │  Impact: 7/10     │
+    │  Effort: 6/10      │  Effort: 4/10     │
+    │  Risk: Low         │  Risk: Low        │
+    │                    │                    │
+    └────────────────────┼────────────────────┘
+                         │
+                    LOW IMPACT
+```
+
+### Recommended Execution Order
+
+| Priority | Component | Why First | Dependencies |
+|----------|-----------|-----------|--------------|
+| **P0** | GeomEppy Integration | Foundation for everything; unblocks accurate ECM simulation | None |
+| **P1** | ECM Expansion (Phase 1) | FVP + DH optimization = immediate Swedish market value | P0 (for accurate savings) |
+| **P2** | Bayesian Calibration | Differentiated value prop, but requires surrogate training infrastructure | P0 |
+| **P3** | Cost Database | Nice-to-have; current estimates are reasonable for MVP | None |
+
+### Quick Wins (Can Do Now)
+
+These can be implemented immediately without the full architecture upgrade:
+
+1. **Add `exhaust_air_heat_pump` ECM** (~2 hours)
+   - Very common Swedish retrofit
+   - Simple IDF modifier (add heat recovery to exhaust)
+   - 40-60% savings potential
+
+2. **Add `district_heating_optimization` ECM** (~2 hours)
+   - Zero/low cost operational measure
+   - Just thermostat adjustments in IDF
+   - 5-10% cost savings
+
+3. **Download BeBo Lönsamhetskalkyl** (~1 hour)
+   - Free Excel with real Swedish costs
+   - Parse and update `costs_sweden.py`
+   - Immediate ROI accuracy improvement
+
+### Risk Mitigation
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| GeomEppy incompatible with eppy | Medium | High | Test early; fallback to manual geometry |
+| Surrogate training fails (R² < 0.90) | Low | High | Add more samples; try neural network surrogate |
+| E+ 25.1 bug breaks GeomEppy IDF | Medium | Medium | Apply same workaround (ConstantSupplyHumidityRatio) |
+| BeBo cost data outdated | Low | Low | Apply BKI inflation index |
+
+### Success Metrics
+
+After full implementation, Raiden should achieve:
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Geometry preservation | >95% of footprint vertices retained | Compare input/output polygon |
+| Surrogate accuracy | R² > 0.95, RMSE < 5 kWh/m² | Cross-validation |
+| Calibration speed | <10s per building | Wall clock time |
+| CI coverage | 85-95% | Synthetic tests with known parameters |
+| ECM coverage | 50+ measures | Catalog count |
+| Swedish-specific ECMs | 10+ unique to Swedish market | Manual review |
+
+### What NOT to Do
+
+1. **Don't build full PostgreSQL backend yet** - Current GeoJSON + file-based approach scales to 37k buildings fine
+2. **Don't pursue real-time Boverket API** - PDF scraping is complex; GeoJSON already has the data
+3. **Don't add non-Swedish ECMs** - Focus on Swedish market value (FVP, DH, BBR compliance)
+4. **Don't over-engineer cost uncertainty** - Point estimates with ±20% range are sufficient for BRF decisions
+
+---
+
+*Analysis by Claude Opus 4.5 | 2025-12-19*
