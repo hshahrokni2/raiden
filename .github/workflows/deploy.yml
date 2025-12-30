@@ -1,0 +1,54 @@
+# Auto-deploy Visual API to Fly.io
+# Triggers on push to main when API-related files change
+
+name: Deploy Visual API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # API and visual analysis
+      - 'src/api/**'
+      - 'src/visual/**'
+      - 'src/ai/llm_client.py'
+      - 'src/ai/facade_analyzer_llm.py'
+      - 'src/ai/material_classifier*.py'
+      - 'src/ai/wwr_detector.py'
+      - 'src/ai/ground_floor_detector.py'
+      # Ingest modules used by visual
+      - 'src/ingest/streetview_fetcher.py'
+      - 'src/ingest/satellite_fetcher.py'
+      - 'src/ingest/height_estimator*.py'
+      # Analysis
+      - 'src/analysis/visual_analyzer.py'
+      # Deployment config
+      - 'Dockerfile'
+      - 'fly.toml'
+      - '.github/workflows/deploy.yml'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Fly.io
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Fly.io CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Verify deployment
+        run: |
+          sleep 10
+          curl -f https://raiden-api.fly.dev/health || exit 1
+        continue-on-error: true
+
