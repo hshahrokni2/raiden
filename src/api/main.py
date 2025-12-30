@@ -137,6 +137,40 @@ class ECMListResponse(BaseModel):
 
 
 # =============================================================================
+# VISUAL ANALYSIS MODELS (for Komilion integration)
+# =============================================================================
+
+class VisualAnalysisRequest(BaseModel):
+    """Request for visual building analysis."""
+    lat: float = Field(..., description="Latitude (WGS84)", example=59.3044309)
+    lon: float = Field(..., description="Longitude (WGS84)", example=18.0937078)
+    include: Optional[List[str]] = Field(
+        default=["height", "floors", "material", "footprint", "form", "era", "wwr"],
+        description="Data to include in response"
+    )
+
+
+class VisualAnalysisResponse(BaseModel):
+    """Response from visual analysis."""
+    success: bool
+    lat: float
+    lon: float
+    height_m: Optional[float] = None
+    floors: Optional[int] = None
+    material: Optional[str] = None
+    building_form: Optional[str] = None
+    estimated_era: Optional[str] = None
+    wwr: Optional[float] = None
+    footprint_m2: Optional[float] = None
+    footprint_geojson: Optional[Dict] = None
+    confidence: Optional[float] = None
+    cost: float = 0.0
+    model: Optional[str] = None
+    error: Optional[str] = None
+    processing_time_seconds: float = 0.0
+
+
+# =============================================================================
 # FASTAPI APPLICATION
 # =============================================================================
 
@@ -314,7 +348,7 @@ if FASTAPI_AVAILABLE:
             catalog = ECMCatalog()
             ecms = []
 
-            for ecm in catalog.get_all():
+            for ecm in catalog.all():
                 cost_info = ECM_COSTS.get(ecm.id, None)
                 cost_category = cost_info.category.value if cost_info else "unknown"
 
@@ -357,6 +391,68 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(status_code=404, detail="Analysis not found")
 
         return ANALYSIS_RESULTS[analysis_id]
+
+    @app.post("/visual/analyze", response_model=VisualAnalysisResponse, tags=["Visual"])
+    async def visual_analyze(request: VisualAnalysisRequest):
+        """
+        Analyze building visually from coordinates.
+
+        Uses Street View imagery and satellite data to extract:
+        - Building height (geometric triangulation)
+        - Floor count (LLM-based)
+        - Facade material (LLM + CLIP)
+        - Building form (lamellhus, skivhus, punkthus, etc.)
+        - Estimated construction era
+        - Window-to-wall ratio (WWR)
+        - Building footprint from satellite
+
+        This endpoint is designed for Komilion integration.
+        """
+        import time
+        start_time = time.time()
+
+        try:
+            from ..visual import quick_visual_scan
+
+            # Run visual analysis
+            result = quick_visual_scan(lat=request.lat, lon=request.lon)
+
+            processing_time = time.time() - start_time
+
+            return VisualAnalysisResponse(
+                success=True,
+                lat=request.lat,
+                lon=request.lon,
+                height_m=result.get("height_m"),
+                floors=result.get("floors"),
+                material=result.get("material"),
+                building_form=result.get("building_form"),
+                estimated_era=result.get("estimated_era"),
+                wwr=result.get("wwr"),
+                footprint_m2=result.get("footprint_area_m2"),
+                footprint_geojson=result.get("footprint_geojson"),
+                confidence=result.get("confidence"),
+                cost=0.0,  # Free models
+                model="nvidia/nemotron-nano-12b-v2-vl:free",
+                processing_time_seconds=processing_time,
+            )
+
+        except Exception as e:
+            logger.error(f"Visual analysis error: {e}")
+            import traceback
+            traceback.print_exc()
+            return VisualAnalysisResponse(
+                success=False,
+                lat=request.lat,
+                lon=request.lon,
+                error=str(e),
+                processing_time_seconds=time.time() - start_time,
+            )
+
+    @app.get("/health", tags=["General"])
+    async def health_check():
+        """Health check endpoint for Fly.io."""
+        return {"status": "healthy", "version": "1.0.0"}
 
 else:
     # Dummy app if FastAPI not installed

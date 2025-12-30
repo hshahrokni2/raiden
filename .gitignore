@@ -67,12 +67,27 @@ data/*.geojson
 data/sweden_buildings.geojson
 data/Generated_Buildings.geojson
 
-# Intermediate output directories
-output_calibrated/
-output_calibrated2/
-output_calibrated3/
-output_generated/
+# Intermediate output directories (all output_* folders)
+output*/
 output/
 
 # Simulation results (reproducible, large)
 examples/*/simulation_results/
+
+# Surrogates (ML models, can be regenerated)
+surrogates*/
+
+# Visual analysis output
+visual_analysis_output/
+
+# Local data files
+data/imagery/
+data/models/
+*.idf
+
+# Supabase migrations (local)
+supabase/.temp/
+
+# Project state files
+PROJECT_INDEX.json
+SESSION_STATE.md

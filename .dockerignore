@@ -1,0 +1,56 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Output directories (large)
+output*/
+data/cache/*
+data/imagery/*
+data/models/*
+visual_analysis_output/
+surrogates*/
+
+# Large data files
+*.idf
+*.epw
+*.geojson
+*.csv
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Tests
+tests/
+benchmarks/
+
+# Notebooks
+notebooks/
+*.ipynb
+
+# Examples
+examples/
+
+# Local config
+.env
+.env.local
+*.log
+
