@@ -18,19 +18,28 @@ COPY pyproject.toml ./
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install dependencies (without AI extras to keep image smaller)
+# Install core dependencies from pyproject.toml (excluding heavy AI extras)
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
     fastapi \
     uvicorn[standard] \
     pydantic>=2.0 \
     pydantic-settings>=2.0 \
+    typer[all]>=0.9.0 \
+    rich>=13.0 \
+    pyproj>=3.6 \
+    shapely>=2.0 \
+    numpy>=1.24 \
+    pandas>=2.0 \
     requests>=2.31 \
+    httpx>=0.25 \
     pillow>=10.0 \
     opencv-python-headless>=4.8 \
-    numpy>=1.24 \
-    rich>=13.0 \
-    python-dotenv>=1.0
+    python-dotenv>=1.0 \
+    geomeppy>=0.11 \
+    eppy>=0.5 \
+    scikit-learn>=1.3.0 \
+    scipy>=1.11
 
 # Production image
 FROM python:3.11-slim
@@ -39,8 +48,11 @@ WORKDIR /app
 
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
