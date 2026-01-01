@@ -31,7 +31,7 @@ from .package_generator import (
     ECMPackage,
     ECMPackageItem,
     generate_packages,
-    ECM_COSTS_PER_M2,
+    get_ecm_cost_per_m2,
     ENERGY_PRICE_SEK_KWH,
 )
 from .package_simulator import (
@@ -39,6 +39,23 @@ from .package_simulator import (
     SimulatedPackage,
     PackageECM,
     create_packages_from_ecm_results,
+)
+from .energy_breakdown import (
+    EndUse,
+    EnergyBreakdown,
+    ECM_END_USE_EFFECTS,
+    DHW_DEFAULTS,
+    PROPERTY_EL_DEFAULTS,
+    estimate_baseline_breakdown,
+    calculate_ecm_savings,
+    format_breakdown_for_report,
+)
+from .visual_analyzer import (
+    VisualAnalyzer,
+    VisualAnalysisResult,
+    GroundFloorResult,
+    analyze_building_visually,
+    analyze_address_visually,
 )
 
 __all__ = [
@@ -70,11 +87,26 @@ __all__ = [
     "ECMPackage",
     "ECMPackageItem",
     "generate_packages",
-    "ECM_COSTS_PER_M2",
+    "get_ecm_cost_per_m2",
     "ENERGY_PRICE_SEK_KWH",
     # Package simulator (physics-based)
     "PackageSimulator",
     "SimulatedPackage",
     "PackageECM",
     "create_packages_from_ecm_results",
+    # Energy breakdown (multi-end-use tracking)
+    "EndUse",
+    "EnergyBreakdown",
+    "ECM_END_USE_EFFECTS",
+    "DHW_DEFAULTS",
+    "PROPERTY_EL_DEFAULTS",
+    "estimate_baseline_breakdown",
+    "calculate_ecm_savings",
+    "format_breakdown_for_report",
+    # Visual analyzer (standalone facade analysis)
+    "VisualAnalyzer",
+    "VisualAnalysisResult",
+    "GroundFloorResult",
+    "analyze_building_visually",
+    "analyze_address_visually",
 ]

@@ -409,17 +409,39 @@ class MaterialClassifier:
         scores[FacadeMaterial.CONCRETE.value] = min(0.7, concrete_score)
 
         # === PLASTER/RENDER DETECTION ===
-        # Plaster: light colored, low saturation, smooth
+        # Swedish plaster/render: can be white, cream, OR colored (orange, yellow, pink)
+        # Key features: relatively smooth surface, uniform color
         plaster_score = 0.0
-        if avg_val > 180:  # Bright
-            plaster_score += 0.3
-        if avg_sat < 60:  # Muted colors
-            plaster_score += 0.2
-        if edge_density < 0.08:  # Very smooth
-            plaster_score += 0.2
-        if r > 200 and g > 190 and b > 170:  # Cream/white
-            plaster_score += 0.2
-        scores[FacadeMaterial.PLASTER.value] = min(0.8, plaster_score)
+
+        # Swedish buildings often have colored render (orange, yellow, pink, green)
+        # These have hue 10-60 (warm) or 70-160 (cool pastels) with medium brightness
+        is_colored_render = (
+            (15 < avg_hue < 60 or 70 < avg_hue < 160)  # Warm or cool colors
+            and 20 < avg_sat < 80  # Medium saturation (not gray, not vivid)
+            and 120 < avg_val < 230  # Medium to bright
+        )
+
+        # White/cream render: low saturation, high brightness
+        is_white_render = avg_sat < 30 and avg_val > 180
+
+        if is_colored_render:
+            plaster_score += 0.5  # Strong signal for colored Swedish render
+        elif is_white_render:
+            plaster_score += 0.4
+
+        # Medium brightness (not too dark = concrete, not white only)
+        if 130 < avg_val < 230:
+            plaster_score += 0.15
+
+        # Relatively smooth surface (but allow some texture from windows/balconies)
+        if edge_density < 0.15:  # Smooth to medium texture
+            plaster_score += 0.15
+
+        # Uniform color (low hue variation = consistent render color)
+        if std_hue < 25:  # Uniform hue across facade
+            plaster_score += 0.1
+
+        scores[FacadeMaterial.PLASTER.value] = min(0.85, plaster_score)
 
         # === GLASS DETECTION ===
         # Glass: often reflects sky (blue), or dark, shiny
@@ -453,15 +475,28 @@ class MaterialClassifier:
         scores[FacadeMaterial.WOOD.value] = min(0.7, wood_score)
 
         # === STONE DETECTION ===
-        # Stone: varied, often gray/beige, textured
+        # Stone: gray or cool beige, textured, NOT warm orange/yellow
+        # Swedish natural stone (granite, limestone): gray or cool beige
+        # Exclude: warm render colors (orange, yellow) which are modern plaster
         stone_score = 0.0
-        if 20 < avg_hue < 50 and avg_sat < 60:  # Beige/tan
-            stone_score += 0.3
-        if edge_density > 0.1:  # Textured
-            stone_score += 0.2
-        if std_hue > 15:  # Color variation
-            stone_score += 0.2
-        scores[FacadeMaterial.STONE.value] = min(0.7, stone_score)
+
+        # Stone is typically gray (very low sat) or cool beige (hue 0-15, low sat)
+        # EXCLUDE warm tones (hue 20-60) which are colored Swedish render
+        is_gray_stone = avg_sat < 25 and 100 < avg_val < 200  # Gray stone
+        is_cool_beige = avg_hue < 15 and avg_sat < 40 and avg_val < 180  # Limestone/sandstone
+
+        if is_gray_stone or is_cool_beige:
+            stone_score += 0.35
+        # Penalize warm colors that indicate render, not stone
+        if 20 < avg_hue < 60 and avg_sat > 20:  # Warm colors = render
+            stone_score -= 0.3
+
+        if edge_density > 0.12:  # Stone has clear texture from joints
+            stone_score += 0.15
+        if std_hue > 20 and avg_sat < 30:  # Gray variation (stone joints)
+            stone_score += 0.15
+
+        scores[FacadeMaterial.STONE.value] = max(0.0, min(0.7, stone_score))
 
         # Find best match
         best_material = max(scores, key=scores.get)

@@ -16,6 +16,7 @@ from src.roi.costs_sweden_v2 import (
     CostSource,
     CostCategory,
     Region,
+    OwnerType,
     CostEntry,
     ECMCostModel,
     CostBreakdown,
@@ -162,24 +163,40 @@ class TestECMCostModel:
         )
 
     def test_basic_calculation(self, sample_model):
-        """Basic cost calculation works."""
+        """Basic cost calculation works for private owner (ROT eligible)."""
         cost = sample_model.calculate_cost(
             quantity=100,  # 100 m²
             year=2024,
             region=Region.MEDIUM_CITY,
             floor_area_m2=1000,
+            owner_type=OwnerType.PRIVATE,  # ROT only for private!
         )
 
         # Material: 100 * 100 = 10,000
         # Labor: 100 * 50 = 5,000
         # Fixed: 10,000
         # Total before: 25,000
-        # ROT on labor: 50% of 5,000 = 2,500
+        # ROT on labor: 50% of 5,000 = 2,500 (only for PRIVATE)
         # Total after: 22,500
 
         assert cost.material_cost == pytest.approx(10000, rel=0.01)
         assert cost.labor_cost == pytest.approx(5000, rel=0.01)
         assert cost.rot_deduction == pytest.approx(2500, rel=0.01)
+
+    def test_brf_no_rot(self, sample_model):
+        """BRF owners do NOT get ROT deduction."""
+        cost = sample_model.calculate_cost(
+            quantity=100,
+            year=2024,
+            region=Region.MEDIUM_CITY,
+            floor_area_m2=1000,
+            owner_type=OwnerType.BRF,  # BRF = no ROT
+        )
+
+        # BRF should have NO ROT deduction
+        assert cost.rot_deduction == 0
+        # Total = material + labor + fixed = 25,000
+        assert cost.total_after_deductions == pytest.approx(25000, rel=0.01)
 
     def test_regional_adjustment(self, sample_model):
         """Regional multiplier applies."""
@@ -201,7 +218,7 @@ class TestECMCostModel:
         assert ratio == pytest.approx(1.18, rel=0.05)
 
     def test_rot_cap_50k(self):
-        """ROT deduction capped at 50,000 SEK."""
+        """ROT deduction capped at 50,000 SEK (private owners only)."""
         model = ECMCostModel(
             ecm_id="big_project",
             name_sv="Stort projekt",
@@ -228,12 +245,13 @@ class TestECMCostModel:
             year=2024,
             region=Region.MEDIUM_CITY,
             floor_area_m2=1000,
+            owner_type=OwnerType.PRIVATE,  # ROT only for private!
         )
 
         assert cost.rot_deduction == 50000
 
     def test_green_tech_deduction(self):
-        """Green tech deduction applies 15%."""
+        """Green tech deduction applies 15% (private owners only)."""
         model = ECMCostModel(
             ecm_id="solar_test",
             name_sv="Solcellstest",
@@ -260,6 +278,7 @@ class TestECMCostModel:
             year=2025,
             region=Region.MEDIUM_CITY,
             floor_area_m2=1000,
+            owner_type=OwnerType.PRIVATE,  # Green tech only for private!
         )
 
         # Green tech: 15% of (material + labor) = 15% of 140,000 = 21,000
@@ -451,8 +470,8 @@ class TestIntegration:
     """Integration tests."""
 
     def test_full_calculation_flow(self):
-        """Complete calculation flow works."""
-        # Create calculator for Stockholm
+        """Complete calculation flow works for BRF (default)."""
+        # Create calculator for Stockholm - defaults to BRF (no ROT)
         calc = SwedishCostCalculatorV2(
             region=Region.STOCKHOLM,
             year=2025,
@@ -471,8 +490,8 @@ class TestIntegration:
         assert cost.material_cost > 0
         assert cost.labor_cost > 0
         assert cost.fixed_cost > 0
-        assert cost.rot_deduction > 0  # Should have ROT
-        assert cost.total_after_deductions < cost.total_before_deductions
+        assert cost.rot_deduction == 0  # BRF = NO ROT (only for private)
+        assert cost.owner_type == OwnerType.BRF
 
         # Export and summary work
         d = cost.to_dict()
@@ -480,6 +499,26 @@ class TestIntegration:
 
         assert isinstance(d, dict)
         assert len(s) > 100  # Reasonable summary length
+
+    def test_private_owner_gets_deductions(self):
+        """Private owner gets ROT and green tech deductions."""
+        calc = SwedishCostCalculatorV2(
+            region=Region.STOCKHOLM,
+            year=2025,
+            owner_type=OwnerType.PRIVATE,
+        )
+
+        # Solar PV - green tech eligible
+        cost = calc.calculate_ecm_cost(
+            ecm_id="solar_pv",
+            quantity=10,  # 10 kWp
+            floor_area_m2=200,
+        )
+
+        # Private owner should get green tech deduction
+        assert cost.green_tech_deduction > 0
+        assert cost.owner_type == OwnerType.PRIVATE
+        assert cost.total_after_deductions < cost.total_before_deductions
 
     def test_package_comparison(self):
         """Can compare package costs."""

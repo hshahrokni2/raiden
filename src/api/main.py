@@ -148,6 +148,18 @@ class VisualAnalysisRequest(BaseModel):
         default=["height", "floors", "material", "footprint", "form", "era", "wwr"],
         description="Data to include in response"
     )
+    # NEW: Address-based footprint resolution (v2.0)
+    brf_addresses: Optional[List[str]] = Field(
+        default=None,
+        description="List of street addresses from energy declaration. "
+                    "Used to correctly slice shared building complexes. "
+                    "Example: ['Filmgatan 1', 'Filmgatan 3', 'Filmgatan 5']"
+    )
+    city: Optional[str] = Field(
+        default=None,
+        description="City name for better address resolution",
+        example="Solna"
+    )
 
 
 class VisualAnalysisResponse(BaseModel):
@@ -163,6 +175,11 @@ class VisualAnalysisResponse(BaseModel):
     wwr: Optional[float] = None
     footprint_m2: Optional[float] = None
     footprint_geojson: Optional[Dict] = None
+    footprint_source: Optional[str] = None  # NEW: 'osm', 'microsoft', 'satellite'
+    footprint_osm_id: Optional[str] = None  # NEW: OSM building ID
+    is_multi_building: bool = False         # NEW: True if BRF has multiple buildings
+    buildings_count: int = 1                # NEW: Number of buildings
+    all_footprints: Optional[List[Dict]] = None  # NEW: All building footprints
     confidence: Optional[float] = None
     cost: float = 0.0
     model: Optional[str] = None
@@ -397,14 +414,17 @@ if FASTAPI_AVAILABLE:
         """
         Analyze building visually from coordinates.
 
-        Uses Street View imagery and satellite data to extract:
-        - Building height (geometric triangulation)
-        - Floor count (LLM-based)
+        NEW in v2.0: Uses OSM footprints by default (much more accurate).
+        Provide brf_addresses to correctly slice shared building complexes.
+
+        Features:
+        - Building height (from OSM or geometric triangulation)
+        - Floor count (from OSM or LLM-based)
         - Facade material (LLM + CLIP)
         - Building form (lamellhus, skivhus, punkthus, etc.)
         - Estimated construction era
         - Window-to-wall ratio (WWR)
-        - Building footprint from satellite
+        - Building footprint from OSM (preferred) or satellite
 
         This endpoint is designed for Komilion integration.
         """
@@ -414,8 +434,13 @@ if FASTAPI_AVAILABLE:
         try:
             from ..visual import quick_visual_scan
 
-            # Run visual analysis
-            result = quick_visual_scan(lat=request.lat, lon=request.lon)
+            # Run visual analysis with optional address-based slicing
+            result = quick_visual_scan(
+                lat=request.lat, 
+                lon=request.lon,
+                brf_addresses=request.brf_addresses,
+                city=request.city,
+            )
 
             processing_time = time.time() - start_time
 
@@ -431,6 +456,11 @@ if FASTAPI_AVAILABLE:
                 wwr=result.get("wwr"),
                 footprint_m2=result.get("footprint_area_m2"),
                 footprint_geojson=result.get("footprint_geojson"),
+                footprint_source=result.get("footprint_source"),
+                footprint_osm_id=result.get("footprint_osm_id"),
+                is_multi_building=result.get("is_multi_building", False),
+                buildings_count=result.get("buildings_count", 1),
+                all_footprints=result.get("all_footprints"),
                 confidence=result.get("confidence"),
                 cost=0.0,  # Free models
                 model="nvidia/nemotron-nano-12b-v2-vl:free",

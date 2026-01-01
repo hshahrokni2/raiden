@@ -110,6 +110,12 @@ from .generator_v2 import (
     WallSegment,
     GEOMEPPY_AVAILABLE,
 )
+from .zone_assignment import (
+    FloorZone,
+    BuildingZoneLayout,
+    assign_zones_to_floors,
+    get_zone_layout_summary,
+)
 from .calibrator import BaselineCalibrator, CalibrationResult, calibrate_baseline
 from .archetype_matcher_v2 import (
     ArchetypeMatcherV2,
@@ -215,6 +221,11 @@ __all__ = [
     'FloorPlan',
     'WallSegment',
     'GEOMEPPY_AVAILABLE',
+    # Zone Assignment (Multi-zone floor-based)
+    'FloorZone',
+    'BuildingZoneLayout',
+    'assign_zones_to_floors',
+    'get_zone_layout_summary',
     # Calibrator
     'BaselineCalibrator',
     'CalibrationResult',

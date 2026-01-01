@@ -531,6 +531,323 @@ ECM_COSTS: Dict[str, ECMCost] = {
         notes="Rörisolering i källare och undercentral. Uninsulated pipes "
               "in basements lose 3-5% of DHW energy. Quick payback."
     ),
+
+    # =========================================================================
+    # PHASE 2 ECMs - DHW & STORAGE (Added 2025-12-26)
+    # =========================================================================
+
+    "heat_pump_water_heater": ECMCost(
+        cost_per_unit=15000,
+        unit="apartment",
+        fixed_cost=30000,
+        installation_fraction=0.35,
+        lifetime_years=15,
+        maintenance_fraction=0.02,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=60,  # DHW portion
+        source="Energimyndigheten",
+        notes="Frånluftsvärmepump för varmvatten. COP 2.5-3.5. Extracts heat "
+              "from exhaust air to preheat DHW. Common in Swedish multi-family."
+    ),
+
+    "heat_recovery_dhw": ECMCost(
+        cost_per_unit=3000,
+        unit="apartment",
+        fixed_cost=10000,
+        installation_fraction=0.5,
+        lifetime_years=20,
+        category=CostCategory.MEDIUM_COST,
+        typical_savings_percent=30,  # DHW portion
+        source="BeBo",
+        notes="Spillvattenvärmeväxling. Recovers 30-50% of drain water heat. "
+              "Best for new builds or major plumbing renovation."
+    ),
+
+    "battery_storage": ECMCost(
+        cost_per_unit=6000,
+        unit="kWh",
+        fixed_cost=15000,
+        installation_fraction=0.2,
+        lifetime_years=15,
+        maintenance_fraction=0.01,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=20,  # Peak shaving + self-consumption
+        source="Energimyndigheten",
+        notes="Batterilager. Store PV for self-consumption. 10-15 kWh typical "
+              "for multi-family common areas. Round-trip efficiency 85-90%."
+    ),
+
+    # =========================================================================
+    # CONTROLS & MONITORING (Added 2025-12-26)
+    # =========================================================================
+
+    "fault_detection": ECMCost(
+        cost_per_unit=0,
+        unit="building",
+        fixed_cost=25000,
+        installation_fraction=0,
+        lifetime_years=10,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=5,
+        source="BeBo",
+        notes="FDD-system. Automated fault detection identifies stuck valves, "
+              "sensor drift, inefficient operation. ROI from reduced maintenance."
+    ),
+
+    "energy_monitoring": ECMCost(
+        cost_per_unit=500,
+        unit="apartment",
+        fixed_cost=20000,
+        installation_fraction=0.3,
+        lifetime_years=15,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=8,
+        source="Energimyndigheten",
+        notes="Energivisualisering. Real-time display of consumption. "
+              "Swedish studies show 5-15% behavioral savings."
+    ),
+
+    "building_automation_system": ECMCost(
+        cost_per_unit=50,
+        unit="m² floor",
+        fixed_cost=80000,
+        installation_fraction=0.4,
+        lifetime_years=15,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=12,
+        source="BeBo",
+        notes="Centralt styrsystem (BAS). Integrates HVAC, lighting, and "
+              "monitoring. Enables advanced optimization and remote management."
+    ),
+
+    "occupancy_sensors": ECMCost(
+        cost_per_unit=2000,
+        unit="zone",
+        fixed_cost=5000,
+        installation_fraction=0.4,
+        lifetime_years=10,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=5,
+        source="Energimyndigheten",
+        notes="Närvarodetektorer. Controls lighting and ventilation based on "
+              "occupancy. Best in common areas with variable occupancy."
+    ),
+
+    "daylight_sensors": ECMCost(
+        cost_per_unit=1500,
+        unit="zone",
+        fixed_cost=3000,
+        installation_fraction=0.3,
+        lifetime_years=10,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=3,
+        source="Sveby",
+        notes="Dagsljusstyrning. Dims lighting based on available daylight. "
+              "Best for south-facing common areas with large windows."
+    ),
+
+    "predictive_control": ECMCost(
+        cost_per_unit=0,
+        unit="building",
+        fixed_cost=50000,
+        installation_fraction=0,
+        lifetime_years=10,
+        category=CostCategory.MEDIUM_COST,
+        typical_savings_percent=8,
+        source="Market research",
+        notes="MPC/prediktiv styrning. Uses weather forecast for optimal "
+              "heating. Reduces peak loads and improves comfort."
+    ),
+
+    # =========================================================================
+    # LIGHTING (Added 2025-12-26)
+    # =========================================================================
+
+    "led_common_areas": ECMCost(
+        cost_per_unit=100,
+        unit="m² common area",
+        fixed_cost=5000,
+        installation_fraction=0.4,
+        lifetime_years=15,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=60,  # Of lighting, ~3% total
+        source="Energimyndigheten",
+        notes="LED i trapphus, källare, tvättstuga. Often combined with "
+              "occupancy sensors for additional savings."
+    ),
+
+    "led_outdoor": ECMCost(
+        cost_per_unit=3000,
+        unit="fixture",
+        fixed_cost=2000,
+        installation_fraction=0.5,
+        lifetime_years=15,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=60,  # Of outdoor lighting
+        source="Energimyndigheten",
+        notes="LED utomhusbelysning. Parking, entrances, facades. "
+              "Often combined with photocell control for dusk-to-dawn."
+    ),
+
+    # =========================================================================
+    # DHW OPTIMIZATION (Added 2025-12-26)
+    # =========================================================================
+
+    "dhw_circulation_optimization": ECMCost(
+        cost_per_unit=0,
+        unit="building",
+        fixed_cost=8000,
+        installation_fraction=0,
+        lifetime_years=5,
+        category=CostCategory.ZERO_COST,
+        typical_savings_percent=15,  # Of circulation losses
+        source="BeBo",
+        notes="VVC-optimering. Timer + temp sensor reduces circulation when "
+              "not needed. Simple payback under 1 year."
+    ),
+
+    "dhw_tank_insulation": ECMCost(
+        cost_per_unit=0,
+        unit="tank",
+        fixed_cost=5000,
+        installation_fraction=0.6,
+        lifetime_years=20,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=3,  # Of DHW losses
+        source="Sveby",
+        notes="Isolering av varmvattenberedare. Adds jacket to existing tank. "
+              "Reduces standby losses 20-30%."
+    ),
+
+    # =========================================================================
+    # ENVELOPE - ADDITIONAL (Added 2025-12-26)
+    # =========================================================================
+
+    "basement_insulation": ECMCost(
+        cost_per_unit=400,
+        unit="m² floor",
+        fixed_cost=10000,
+        installation_fraction=0.5,
+        lifetime_years=40,
+        category=CostCategory.MEDIUM_COST,
+        typical_savings_percent=5,
+        source="Wikells",
+        notes="Källarisolering (golv eller tak). XPS or EPS insulation. "
+              "Best combined with other basement renovation."
+    ),
+
+    "entrance_door_replacement": ECMCost(
+        cost_per_unit=25000,
+        unit="door",
+        fixed_cost=5000,
+        installation_fraction=0.3,
+        lifetime_years=30,
+        category=CostCategory.MEDIUM_COST,
+        typical_savings_percent=2,
+        source="Wikells",
+        notes="Entréportbyte. Improves air sealing 8-10%. Often includes "
+              "automatic closer and weatherstripping."
+    ),
+
+    "thermal_bridge_remediation": ECMCost(
+        cost_per_unit=500,
+        unit="m²",
+        fixed_cost=20000,
+        installation_fraction=0.6,
+        lifetime_years=40,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=5,
+        source="BeBo",
+        notes="Köldbryggeåtgärder. Balcony connections, window reveals, "
+              "foundation junction. Best combined with facade renovation."
+    ),
+
+    "facade_renovation": ECMCost(
+        cost_per_unit=2000,
+        unit="m² wall",
+        fixed_cost=100000,
+        installation_fraction=0.45,
+        lifetime_years=40,
+        category=CostCategory.MAJOR_INVESTMENT,
+        typical_savings_percent=25,
+        source="BeBo",
+        notes="Fasadrenovering komplett. Includes insulation, windows, "
+              "thermal bridges. Major intervention but comprehensive."
+    ),
+
+    # =========================================================================
+    # HVAC - ADDITIONAL (Added 2025-12-26)
+    # =========================================================================
+
+    "ftx_overhaul": ECMCost(
+        cost_per_unit=80,
+        unit="m² floor",
+        fixed_cost=25000,
+        installation_fraction=0.5,
+        lifetime_years=10,
+        category=CostCategory.MEDIUM_COST,
+        typical_savings_percent=8,
+        source="BeBo",
+        notes="FTX-renovering. Heat exchanger cleaning, new fans, controls "
+              "upgrade. Restores efficiency after 15-20 years."
+    ),
+
+    "air_source_heat_pump": ECMCost(
+        cost_per_unit=8000,
+        unit="kW",
+        fixed_cost=50000,
+        installation_fraction=0.25,
+        lifetime_years=15,
+        maintenance_fraction=0.02,
+        category=CostCategory.HIGH_COST,
+        typical_savings_percent=50,
+        source="Energimyndigheten",
+        notes="Luft-vattenvärmepump. COP 3-4. Best for replacing oil/gas. "
+              "Lower initial cost than ground source but lower COP in winter."
+    ),
+
+    "radiator_fans": ECMCost(
+        cost_per_unit=800,
+        unit="radiator",
+        fixed_cost=2000,
+        installation_fraction=0.3,
+        lifetime_years=10,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=5,
+        source="Market research",
+        notes="Radiatorfläktar. Improves heat transfer, allows 1-2°C lower "
+              "supply temp. Adds ~5W electricity per radiator."
+    ),
+
+    # =========================================================================
+    # OPERATIONAL (Added 2025-12-26)
+    # =========================================================================
+
+    "recommissioning": ECMCost(
+        cost_per_unit=0,
+        unit="building",
+        fixed_cost=30000,
+        installation_fraction=0,
+        lifetime_years=5,
+        category=CostCategory.LOW_COST,
+        typical_savings_percent=10,
+        source="BeBo",
+        notes="Funktionskontroll. Systematic check of all building systems. "
+              "Often finds 10-15% savings from drift and incorrect settings."
+    ),
+
+    "vrf_system": ECMCost(
+        cost_per_unit=3500,
+        unit="kW",
+        fixed_cost=100000,
+        installation_fraction=0.35,
+        lifetime_years=20,
+        category=CostCategory.MAJOR_INVESTMENT,
+        typical_savings_percent=40,
+        source="Market research",
+        notes="VRF-system. Variable Refrigerant Flow for heating/cooling. "
+              "Complex installation, not common in Swedish residential."
+    ),
 }
 
 

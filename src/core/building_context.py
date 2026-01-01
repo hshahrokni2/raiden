@@ -14,7 +14,7 @@ And intelligently infers:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from enum import Enum
 import logging
 
@@ -36,19 +36,28 @@ class ExistingMeasure(Enum):
     ROOF_INSULATION = "roof_insulation"
     WINDOW_REPLACEMENT = "window_replacement"
     AIR_SEALING = "air_sealing"
+    BASEMENT_INSULATION = "basement_insulation"
 
-    # HVAC
-    FTX_SYSTEM = "ftx_system"
-    HEAT_RECOVERY = "heat_recovery"
-    HEAT_PUMP_GROUND = "heat_pump_ground"
-    HEAT_PUMP_EXHAUST = "heat_pump_exhaust"
+    # HVAC - Ventilation
+    FTX_SYSTEM = "ftx_system"  # Full heat recovery ventilation
+    F_SYSTEM = "f_system"  # Mechanical exhaust only (no heat recovery)
+    HEAT_RECOVERY = "heat_recovery"  # Generic heat recovery (FTX or exhaust HP)
+    DCV_SYSTEM = "dcv_system"  # Demand-controlled ventilation
+
+    # HVAC - Heat Pumps (mutually exclusive for main heating)
+    HEAT_PUMP_GROUND = "heat_pump_ground"  # Ground source / geothermal
+    HEAT_PUMP_EXHAUST = "heat_pump_exhaust"  # Exhaust air (frånluftsvärmepump)
+    HEAT_PUMP_AIR = "heat_pump_air"  # Air source (luft-luft/luft-vatten)
+    HEAT_PUMP_WATER = "heat_pump_water"  # DHW heat pump
 
     # Renewables
     SOLAR_PV = "solar_pv"
     SOLAR_THERMAL = "solar_thermal"
 
-    # Controls
-    LED_LIGHTING = "led_lighting"
+    # Controls & Lighting
+    LED_LIGHTING = "led_lighting"  # Any LED (general, common, outdoor)
+    SMART_THERMOSTATS = "smart_thermostats"
+    BMS_SYSTEM = "bms_system"  # Building management system
 
 
 @dataclass
@@ -130,6 +139,9 @@ class EnhancedBuildingContext:
     # Raw energy declaration data
     energy_declaration: Optional[EnergyDeclarationData] = None
 
+    # Calibration hints from LLM archetype reasoner (renovation detection)
+    calibration_hints: Dict[str, Any] = field(default_factory=dict)
+
     def to_constraint_context(self) -> Dict:
         """Convert to dict for ConstraintEngine."""
         return {
@@ -165,34 +177,68 @@ class ExistingMeasuresDetector:
 
     # Keywords that indicate measure is already done
     MEASURE_KEYWORDS = {
+        # Ventilation
         ExistingMeasure.FTX_SYSTEM: [
             'ftx', 'värmeåtervinning', 'heat recovery',
-            'roterande värmeväxlare', 'plattvärmeväxlare'
+            'roterande värmeväxlare', 'plattvärmeväxlare',
+            'motströmsvärmeväxlare', 'fläkt med återvinning'
         ],
+        ExistingMeasure.F_SYSTEM: [
+            'mekanisk frånluft', 'fläktventilation', 'f-system'
+        ],
+        ExistingMeasure.DCV_SYSTEM: [
+            'behovsstyrd ventilation', 'dcv', 'co2-styrd',
+            'demand controlled', 'variabelt luftflöde'
+        ],
+        # Heat pumps
         ExistingMeasure.HEAT_PUMP_GROUND: [
-            'bergvärme', 'jordvärme', 'geotermi', 'ground source'
+            'bergvärme', 'jordvärme', 'geotermi', 'ground source',
+            'borrhål', 'geotermisk'
         ],
         ExistingMeasure.HEAT_PUMP_EXHAUST: [
-            'frånluftsvärmepump', 'exhaust air heat pump'
+            'frånluftsvärmepump', 'exhaust air heat pump', 'fvp',
+            'frånluftspump'
         ],
+        ExistingMeasure.HEAT_PUMP_AIR: [
+            'luft-luft', 'luft-vatten', 'luftvärmepump',
+            'air source', 'air-to-air', 'air-to-water'
+        ],
+        ExistingMeasure.HEAT_PUMP_WATER: [
+            'varmvattenpump', 'dhw heat pump', 'varmvattenvärmepump'
+        ],
+        # Solar
         ExistingMeasure.SOLAR_PV: [
-            'solcell', 'solel', 'pv', 'photovoltaic'
+            'solcell', 'solel', 'pv', 'photovoltaic', 'solpanel'
         ],
         ExistingMeasure.SOLAR_THERMAL: [
             'solfångare', 'solar thermal', 'solvärme'
         ],
+        # Envelope
         ExistingMeasure.WINDOW_REPLACEMENT: [
-            'fönsterbyte', 'nya fönster', 'treglas', 'triple glazing'
+            'fönsterbyte', 'nya fönster', 'treglas', 'triple glazing',
+            'energifönster', 'lågemissionsglas'
         ],
         ExistingMeasure.EXTERNAL_WALL_INSULATION: [
             'tilläggsisolering', 'fasadisolering', 'etics',
-            'utvändig isolering'
+            'utvändig isolering', 'tilläggsisolerad'
         ],
         ExistingMeasure.ROOF_INSULATION: [
-            'vindsisolering', 'takisolering', 'attic insulation'
+            'vindsisolering', 'takisolering', 'attic insulation',
+            'blåst isolering'
         ],
+        ExistingMeasure.BASEMENT_INSULATION: [
+            'källarisolering', 'golvssiolering', 'basement insulation'
+        ],
+        # Controls
         ExistingMeasure.LED_LIGHTING: [
             'led', 'led-belysning', 'energieffektiv belysning'
+        ],
+        ExistingMeasure.SMART_THERMOSTATS: [
+            'smart termostat', 'rumstermostat', 'iot termostat'
+        ],
+        ExistingMeasure.BMS_SYSTEM: [
+            'styr- och övervakning', 'bms', 'fastighetssystem',
+            'ddc', 'building automation'
         ],
     }
 
@@ -205,37 +251,81 @@ class ExistingMeasuresDetector:
 
         Sources:
         - Ventilation system type (FTX = heat recovery exists)
-        - Heat sources (ground source HP, exhaust air HP)
-        - Solar generation (PV exists)
+        - Heat sources (ground source HP, exhaust air HP, air source HP)
+        - Solar generation (PV/thermal exists)
         - Recommendations (if NOT recommended, might be done)
         - Raw text analysis
+
+        CRITICAL: This is the ROCK SOLID logic for filtering ECMs.
+        If any measure is detected here, corresponding ECMs will be excluded.
         """
         existing = set()
 
-        # 1. Check ventilation type
-        vent_type = declaration.ventilation.system_type.upper()
+        # ════════════════════════════════════════════════════════════════
+        # 1. VENTILATION TYPE - from energy declaration
+        # ════════════════════════════════════════════════════════════════
+        vent_type = declaration.ventilation.system_type.upper() if declaration.ventilation else ''
         if vent_type == 'FTX':
             existing.add(ExistingMeasure.FTX_SYSTEM)
             existing.add(ExistingMeasure.HEAT_RECOVERY)
-            logger.info("Detected existing: FTX system (from ventilation type)")
+            logger.info("✓ Detected FTX system (heat recovery ventilation)")
+        elif vent_type in ('F', 'FT'):
+            existing.add(ExistingMeasure.F_SYSTEM)
+            logger.info(f"✓ Detected {vent_type} system (mechanical ventilation)")
 
-        # 2. Check heat sources
+        # Check for heat recovery efficiency (indicates FTX even if not labeled)
+        if hasattr(declaration.ventilation, 'heat_recovery_efficiency'):
+            hr_eff = declaration.ventilation.heat_recovery_efficiency or 0
+            if hr_eff > 0.4:  # Any meaningful heat recovery
+                existing.add(ExistingMeasure.HEAT_RECOVERY)
+                if hr_eff > 0.6:  # Good FTX system
+                    existing.add(ExistingMeasure.FTX_SYSTEM)
+                    logger.info(f"✓ Detected FTX (heat recovery efficiency: {hr_eff:.0%})")
+
+        # ════════════════════════════════════════════════════════════════
+        # 2. HEAT PUMPS - from energy kWh data
+        # NOTE: These are MUTUALLY EXCLUSIVE for main heating
+        # ════════════════════════════════════════════════════════════════
         if declaration.ground_source_heat_pump_kwh and declaration.ground_source_heat_pump_kwh > 0:
             existing.add(ExistingMeasure.HEAT_PUMP_GROUND)
-            logger.info("Detected existing: Ground source heat pump")
+            logger.info(f"✓ Ground source HP: {declaration.ground_source_heat_pump_kwh:,.0f} kWh")
 
         if declaration.exhaust_air_heat_pump_kwh and declaration.exhaust_air_heat_pump_kwh > 0:
             existing.add(ExistingMeasure.HEAT_PUMP_EXHAUST)
-            logger.info("Detected existing: Exhaust air heat pump")
+            existing.add(ExistingMeasure.HEAT_RECOVERY)  # FVP provides heat recovery too
+            logger.info(f"✓ Exhaust air HP: {declaration.exhaust_air_heat_pump_kwh:,.0f} kWh")
 
-        # 3. Check solar
+        # Check for air-source heat pump (if field exists)
+        if hasattr(declaration, 'air_source_heat_pump_kwh'):
+            if declaration.air_source_heat_pump_kwh and declaration.air_source_heat_pump_kwh > 0:
+                existing.add(ExistingMeasure.HEAT_PUMP_AIR)
+                logger.info(f"✓ Air source HP: {declaration.air_source_heat_pump_kwh:,.0f} kWh")
+
+        # Check for generic heat pump kWh (some declarations bundle all HPs)
+        if hasattr(declaration, 'heat_pump_kwh'):
+            if declaration.heat_pump_kwh and declaration.heat_pump_kwh > 0:
+                # We have SOME heat pump, but don't know which type
+                # Flag all HP ECMs as existing to be safe
+                if not any(m in existing for m in [
+                    ExistingMeasure.HEAT_PUMP_GROUND,
+                    ExistingMeasure.HEAT_PUMP_EXHAUST,
+                    ExistingMeasure.HEAT_PUMP_AIR
+                ]):
+                    logger.warning(f"⚠ Unknown HP type with {declaration.heat_pump_kwh:,.0f} kWh - blocking all HP ECMs")
+                    existing.add(ExistingMeasure.HEAT_PUMP_GROUND)
+                    existing.add(ExistingMeasure.HEAT_PUMP_EXHAUST)
+                    existing.add(ExistingMeasure.HEAT_PUMP_AIR)
+
+        # ════════════════════════════════════════════════════════════════
+        # 3. SOLAR - from energy kWh data
+        # ════════════════════════════════════════════════════════════════
         if declaration.solar_pv_kwh and declaration.solar_pv_kwh > 0:
             existing.add(ExistingMeasure.SOLAR_PV)
-            logger.info("Detected existing: Solar PV")
+            logger.info(f"✓ Solar PV: {declaration.solar_pv_kwh:,.0f} kWh")
 
         if declaration.solar_thermal_kwh and declaration.solar_thermal_kwh > 0:
             existing.add(ExistingMeasure.SOLAR_THERMAL)
-            logger.info("Detected existing: Solar thermal")
+            logger.info(f"✓ Solar thermal: {declaration.solar_thermal_kwh:,.0f} kWh")
 
         # 4. Analyze raw text for keywords
         if declaration.raw_text:
@@ -474,8 +564,11 @@ class BuildingContextBuilder:
         """Apply detailed archetype defaults from V2 matcher."""
         arch = match_result.archetype
 
-        # Apply U-values from calibration hints
+        # Store calibration hints for later use by BayesianCalibrationPipeline
         hints = match_result.calibration_hints
+        if hints:
+            ctx.calibration_hints = hints
+            logger.info(f"Stored calibration hints: {list(hints.keys())}")
 
         if ctx.current_window_u == 2.0 and 'window_u_value' in hints:
             ctx.current_window_u = hints['window_u_value']
@@ -582,22 +675,63 @@ class SmartECMFilter:
     """
     Filter ECMs based on building context AND existing measures.
 
-    Two-stage filtering:
+    ROCK SOLID two-stage filtering:
     1. ConstraintEngine - technical applicability (facade, heating system, etc.)
     2. Existing measures - don't recommend what's already done
+
+    CRITICAL RULES:
+    - If FTX exists → no ftx_installation, only ftx_upgrade/overhaul
+    - If heat pump exists → no other heat pump ECMs (they're mutually exclusive)
+    - If solar PV exists → no solar_pv ECM
+    - If heat recovery exists → reduced savings for exhaust_air_heat_pump
     """
 
-    # Mapping from ECM IDs to existing measures
+    # ════════════════════════════════════════════════════════════════
+    # COMPREHENSIVE ECM → MEASURE MAPPING
+    # ════════════════════════════════════════════════════════════════
     ECM_TO_MEASURE = {
+        # Envelope ECMs
         'wall_external_insulation': ExistingMeasure.EXTERNAL_WALL_INSULATION,
         'wall_internal_insulation': ExistingMeasure.INTERNAL_WALL_INSULATION,
+        'facade_renovation': ExistingMeasure.EXTERNAL_WALL_INSULATION,  # Implies insulation
         'roof_insulation': ExistingMeasure.ROOF_INSULATION,
         'window_replacement': ExistingMeasure.WINDOW_REPLACEMENT,
         'air_sealing': ExistingMeasure.AIR_SEALING,
-        'ftx_upgrade': ExistingMeasure.FTX_SYSTEM,  # Can't upgrade if no FTX
-        'ftx_installation': ExistingMeasure.FTX_SYSTEM,  # Can't install if already have
+        'basement_insulation': ExistingMeasure.BASEMENT_INSULATION,
+
+        # Ventilation ECMs
+        'ftx_installation': ExistingMeasure.FTX_SYSTEM,  # Blocked if FTX exists
+        # ftx_upgrade and ftx_overhaul REQUIRE existing FTX (handled in special cases)
+
+        # Solar ECMs
         'solar_pv': ExistingMeasure.SOLAR_PV,
+        'solar_thermal': ExistingMeasure.SOLAR_THERMAL,
+
+        # Lighting ECMs (all map to same measure)
         'led_lighting': ExistingMeasure.LED_LIGHTING,
+        'led_common_areas': ExistingMeasure.LED_LIGHTING,
+        'led_outdoor': ExistingMeasure.LED_LIGHTING,
+
+        # Controls
+        'smart_thermostats': ExistingMeasure.SMART_THERMOSTATS,
+        'building_automation_system': ExistingMeasure.BMS_SYSTEM,
+    }
+
+    # Heat pump ECMs that should be blocked if ANY heat pump exists
+    HEAT_PUMP_ECMS = {
+        'ground_source_heat_pump': ExistingMeasure.HEAT_PUMP_GROUND,
+        'exhaust_air_heat_pump': ExistingMeasure.HEAT_PUMP_EXHAUST,
+        'air_source_heat_pump': ExistingMeasure.HEAT_PUMP_AIR,
+        'heat_pump_water_heater': ExistingMeasure.HEAT_PUMP_WATER,
+        'heat_pump_integration': None,  # Generic - blocked if any HP
+    }
+
+    # ECMs that require mechanical ventilation (F, FT, or FTX)
+    REQUIRES_MECH_VENT = {
+        'demand_controlled_ventilation',
+        'ftx_upgrade',
+        'ftx_overhaul',
+        'ventilation_schedule_optimization',
     }
 
     def filter_ecms(
@@ -625,6 +759,19 @@ class SmartECMFilter:
         already_done = []
         not_applicable = []
 
+        # Pre-compute flags for efficiency
+        has_ftx = ExistingMeasure.FTX_SYSTEM in context.existing_measures
+        has_f_system = ExistingMeasure.F_SYSTEM in context.existing_measures
+        has_mech_vent = has_ftx or has_f_system
+        has_heat_recovery = ExistingMeasure.HEAT_RECOVERY in context.existing_measures
+
+        # Check for ANY heat pump
+        has_any_heat_pump = any(m in context.existing_measures for m in [
+            ExistingMeasure.HEAT_PUMP_GROUND,
+            ExistingMeasure.HEAT_PUMP_EXHAUST,
+            ExistingMeasure.HEAT_PUMP_AIR,
+        ])
+
         for ecm in all_ecms:
             # Stage 1: Technical constraint check
             result = constraint_engine.evaluate_ecm(ecm, constraint_ctx)
@@ -636,7 +783,9 @@ class SmartECMFilter:
                 })
                 continue
 
-            # Stage 2: Existing measure check
+            # ════════════════════════════════════════════════════════════════
+            # Stage 2: Existing measure check (simple mapping)
+            # ════════════════════════════════════════════════════════════════
             ecm_measure = self.ECM_TO_MEASURE.get(ecm.id)
             if ecm_measure and ecm_measure in context.existing_measures:
                 already_done.append({
@@ -645,23 +794,75 @@ class SmartECMFilter:
                 })
                 continue
 
-            # Special case: ftx_upgrade requires existing FTX
-            if ecm.id == 'ftx_upgrade':
-                if ExistingMeasure.FTX_SYSTEM not in context.existing_measures:
+            # ════════════════════════════════════════════════════════════════
+            # Stage 3: Special case - FTX logic
+            # ════════════════════════════════════════════════════════════════
+            if ecm.id == 'ftx_installation':
+                if has_ftx:
+                    already_done.append({
+                        'ecm': ecm,
+                        'reason': 'FTX system already installed'
+                    })
+                    continue
+
+            if ecm.id in ('ftx_upgrade', 'ftx_overhaul'):
+                if not has_ftx:
                     not_applicable.append({
                         'ecm': ecm,
                         'reasons': [('ventilation', 'No FTX system to upgrade')]
                     })
                     continue
 
-            # Special case: ftx_installation not applicable if FTX exists
-            if ecm.id == 'ftx_installation':
-                if ExistingMeasure.FTX_SYSTEM in context.existing_measures:
-                    already_done.append({
+            # ════════════════════════════════════════════════════════════════
+            # Stage 4: Special case - Heat pump mutual exclusivity
+            # ════════════════════════════════════════════════════════════════
+            if ecm.id in self.HEAT_PUMP_ECMS:
+                if has_any_heat_pump:
+                    # Check if this SPECIFIC type is installed
+                    specific_measure = self.HEAT_PUMP_ECMS.get(ecm.id)
+                    if specific_measure and specific_measure in context.existing_measures:
+                        already_done.append({
+                            'ecm': ecm,
+                            'reason': f'Already has: {specific_measure.value}'
+                        })
+                    else:
+                        # Different HP type exists - still not applicable
+                        not_applicable.append({
+                            'ecm': ecm,
+                            'reasons': [('heating', 'Building already has a heat pump system')]
+                        })
+                    continue
+
+            # Special case: heat_pump_integration requires existing HP
+            if ecm.id == 'heat_pump_integration':
+                if not has_any_heat_pump:
+                    not_applicable.append({
                         'ecm': ecm,
-                        'reason': 'FTX system already installed'
+                        'reasons': [('heating', 'No heat pump to integrate')]
                     })
                     continue
+
+            # ════════════════════════════════════════════════════════════════
+            # Stage 5: Special case - DCV and vent optimization need mech vent
+            # ════════════════════════════════════════════════════════════════
+            if ecm.id in self.REQUIRES_MECH_VENT:
+                if not has_mech_vent:
+                    not_applicable.append({
+                        'ecm': ecm,
+                        'reasons': [('ventilation', 'Requires mechanical ventilation (F/FT/FTX)')]
+                    })
+                    continue
+
+            # ════════════════════════════════════════════════════════════════
+            # Stage 6: Special case - Exhaust air HP less effective with FTX
+            # ════════════════════════════════════════════════════════════════
+            if ecm.id == 'exhaust_air_heat_pump' and has_ftx:
+                # FTX already recovers heat from exhaust - exhaust HP adds little
+                not_applicable.append({
+                    'ecm': ecm,
+                    'reasons': [('heating', 'FTX already recovers exhaust heat - exhaust HP not beneficial')]
+                })
+                continue
 
             # Passed all filters!
             applicable.append(ecm)

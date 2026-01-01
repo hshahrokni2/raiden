@@ -35,8 +35,62 @@ from ..utils.validation import (
     AddressComponents,
 )
 from ..utils.retry import retry_with_backoff, RetryConfig, RetryableRequest
+from .coordinates import CoordinateTransformer
 
 logger = get_logger(__name__)
+
+# Singleton coordinate transformer for SWEREF99 <-> WGS84 conversion
+_coord_transformer = None
+
+def _get_coord_transformer() -> CoordinateTransformer:
+    """Get or create coordinate transformer (singleton for efficiency)."""
+    global _coord_transformer
+    if _coord_transformer is None:
+        _coord_transformer = CoordinateTransformer()
+    return _coord_transformer
+
+
+def _convert_sweref_footprint_to_wgs84(footprint_coords: list) -> list:
+    """
+    Convert SWEREF99 3D footprint coordinates to WGS84 2D.
+
+    Sweden Buildings GeoJSON uses SWEREF99 TM (EPSG:3006) with 3D coords:
+    [[[x, y, z], [x, y, z], ...], ...]  (nested rings with 3D points)
+
+    We need WGS84 2D for geometry calculations:
+    [(lon, lat), (lon, lat), ...]
+
+    Returns:
+        List of (lon, lat) tuples for the outer ring only
+    """
+    if not footprint_coords:
+        return []
+
+    transformer = _get_coord_transformer()
+
+    # Extract outer ring (first element)
+    try:
+        outer_ring = footprint_coords[0] if footprint_coords else []
+
+        # Check if it's already 2D WGS84 format [(lon, lat), ...]
+        if outer_ring and isinstance(outer_ring[0], (tuple, list)):
+            first_coord = outer_ring[0]
+            # SWEREF99 has large values (6-7 digits), WGS84 is small (2-3 digits)
+            if len(first_coord) >= 2:
+                x_val = abs(first_coord[0])
+                # If x coordinate is > 1000, it's SWEREF99 (meters, not degrees)
+                if x_val > 1000:
+                    # SWEREF99 3D format: [[x, y, z], ...]
+                    wgs84_coords = transformer.coords_3d_to_2d_wgs84(outer_ring)
+                    return wgs84_coords
+                else:
+                    # Already WGS84: return as tuples
+                    return [(c[0], c[1]) for c in outer_ring]
+
+        return []
+    except Exception as e:
+        logger.warning(f"Failed to convert footprint coords: {e}")
+        return []
 
 
 @dataclass
@@ -72,6 +126,11 @@ class BuildingData:
     building_length_m: float = 30.0
     has_gallery_access: bool = False  # loftgångshus
 
+    # Footprint geometry (from GeoJSON or OSM)
+    footprint_area_m2: float = 0.0
+    height_m: float = 0.0
+    footprint_coords: List[tuple] = field(default_factory=list)  # [(x, y), ...]
+
     # Window-to-Wall Ratio (from AI detection or estimation)
     wwr: float = 0.20  # Default 20%, range 0.10-0.40 for Swedish buildings
     wwr_by_direction: Dict[str, float] = field(default_factory=dict)  # {N: 0.15, S: 0.25, ...}
@@ -83,6 +142,12 @@ class BuildingData:
     has_ftx: bool = False
     has_heat_pump: bool = False
     has_solar: bool = False
+
+    # Detailed energy source kWh (from Sweden Buildings / Gripen)
+    exhaust_air_hp_kwh: float = 0.0
+    ground_source_hp_kwh: float = 0.0
+    air_source_hp_kwh: float = 0.0
+    district_heating_kwh: float = 0.0
 
     # Financials (for BRF)
     current_fund_sek: float = 0
@@ -486,9 +551,31 @@ class BuildingDataFetcher:
 
             # Determine heating system
             heating = sweden_building.get_primary_heating()
-            has_hp = heating in ["ground_source_hp", "exhaust_air_hp", "air_water_hp", "air_air_hp"]
+            # Check if ANY heat pump is present (buildings can have district heating AND heat pump)
+            has_hp = (
+                heating in ["ground_source_hp", "exhaust_air_hp", "air_water_hp", "air_air_hp"] or
+                sweden_building.exhaust_air_hp_kwh > 0 or
+                sweden_building.ground_source_hp_kwh > 0 or
+                sweden_building.air_water_hp_kwh > 0 or
+                sweden_building.air_air_hp_kwh > 0
+            )
 
             # Create BuildingData from rich GeoJSON data
+            # Calculate height from floors if not available
+            floors = sweden_building.num_floors or 4
+            height = sweden_building.height_m or (floors * 3.0)  # Assume 3m per floor
+            footprint = sweden_building.footprint_area_m2 or 0.0
+
+            # Calculate width/length from footprint (assume square-ish)
+            import math
+            if footprint > 0:
+                # Estimate width/length assuming 1:2 aspect ratio (typical lamellhus)
+                width = math.sqrt(footprint / 2)
+                length = width * 2
+            else:
+                width = 12.0
+                length = 30.0
+
             data = BuildingData(
                 address=sweden_building.address,
                 latitude=lat,
@@ -496,14 +583,27 @@ class BuildingDataFetcher:
                 construction_year=sweden_building.construction_year or 2000,
                 building_type="multi_family" if "Flerbostadshus" in sweden_building.building_category else "single_family",
                 atemp_m2=sweden_building.atemp_m2,
-                num_floors=sweden_building.num_floors or 4,
+                num_floors=int(floors),
                 num_apartments=int(sweden_building.num_apartments or 0),
+                # Geometry from GeoJSON
+                footprint_area_m2=footprint,
+                height_m=height,
+                footprint_coords=_convert_sweref_footprint_to_wgs84(sweden_building.footprint_coords) if sweden_building.footprint_coords else [],
+                building_width_m=width,
+                building_length_m=length,
+                # Energy data
                 declared_energy_kwh_m2=sweden_building.energy_performance_kwh_m2 or 0,
                 energy_class=sweden_building.energy_class or "Unknown",
                 heating_system="district" if sweden_building.district_heating_kwh > 0 else ("heat_pump" if has_hp else "electric"),
                 has_ftx=sweden_building.ventilation_type == "FTX",
                 has_heat_pump=has_hp,
                 has_solar=sweden_building.has_solar_pv or sweden_building.has_solar_thermal,
+                # Detailed energy source kWh (crucial for existing measures detection!)
+                exhaust_air_hp_kwh=sweden_building.exhaust_air_hp_kwh or 0.0,
+                ground_source_hp_kwh=sweden_building.ground_source_hp_kwh or 0.0,
+                # Air source = air-to-water + air-to-air heat pumps
+                air_source_hp_kwh=(sweden_building.air_water_hp_kwh or 0.0) + (sweden_building.air_air_hp_kwh or 0.0),
+                district_heating_kwh=sweden_building.district_heating_kwh or 0.0,
                 data_sources=sources,
             )
 
@@ -523,15 +623,33 @@ class BuildingDataFetcher:
                         setattr(data, key, value)
                 sources.append("user_provided")
 
-            # Optionally fetch facade images (still useful for material detection)
+            # Optionally fetch facade images AND run AI analysis for material detection
             if fetch_images and self.facade_fetcher:
                 try:
                     images = self._fetch_facade_images(lat, lon, None)
                     if images:
                         data.facade_images = images
                         sources.append("mapillary")
+
+                        # Run AI analysis on facade images to get accurate material detection
+                        # This is important because era-based guessing (brick/concrete/plaster) is often wrong
+                        ai_results = self._analyze_facade_images(images)
+                        if ai_results.get("facade_material"):
+                            data.facade_material = ai_results["facade_material"]
+                            logger.info(f"  ✓ AI detected material: {data.facade_material} ({ai_results.get('material_confidence', 0):.0%})")
+                            sources.append("ai_material_detection")
+                        if ai_results.get("wwr_average") and ai_results["wwr_average"] > 0:
+                            data.wwr = ai_results["wwr_average"]
+                            sources.append("ai_wwr_detection")
+                        if ai_results.get("wwr_by_direction"):
+                            for direction, wwr_list in ai_results["wwr_by_direction"].items():
+                                if wwr_list:
+                                    data.wwr_by_direction[direction] = sum(wwr_list) / len(wwr_list)
                 except Exception as e:
-                    logger.warning(f"Mapillary fetch failed: {e}")
+                    logger.warning(f"Mapillary/AI analysis failed: {e}")
+
+            # Estimate any missing values (like peak_el_kw, peak_fv_kw)
+            data = self._estimate_missing_values(data)
 
             data.data_sources = sources
             data.confidence_score = min(len(sources) / 3 + 0.5, 1.0)  # Higher base confidence
@@ -941,7 +1059,7 @@ class AddressPipeline:
     """
 
     def __init__(self, output_dir: Optional[Path] = None):
-        self.output_dir = output_dir or Path("./output")
+        self.output_dir = Path(output_dir) if output_dir else Path("./output")
         self.data_fetcher = BuildingDataFetcher()
 
     def analyze(
@@ -1112,31 +1230,108 @@ class AddressPipeline:
             )
 
     def _run_energy_analysis(self, building_data: BuildingData) -> Optional[Any]:
-        """Run energy analysis using BuildingAnalyzer."""
+        """
+        Run comprehensive energy analysis using FullPipelineAnalyzer.
+
+        This connects to the full analysis pipeline which includes:
+        - Bayesian calibration with GP surrogates
+        - EnergyPlus simulation
+        - 51 ECM analysis with cost calculation
+        - Ground floor commercial detection
+        - Mixed-use zone modeling
+        """
+        import asyncio
+
         try:
-            # Create building context JSON for the analyzer
-            building_json = self._create_building_json(building_data)
+            from ..analysis.full_pipeline import FullPipelineAnalyzer
 
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(
-                mode='w',
-                suffix='.json',
-                delete=False
-            ) as f:
-                json.dump(building_json, f, indent=2)
-                temp_path = Path(f.name)
+            # Get API keys from environment
+            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            mapillary_token = os.environ.get("MAPILLARY_TOKEN")
 
-            # Import and run analyzer
-            from ..analysis.building_analyzer import BuildingAnalyzer
+            # Initialize the full pipeline analyzer
+            analyzer = FullPipelineAnalyzer(
+                google_api_key=google_api_key,
+                mapillary_token=mapillary_token,
+                output_dir=self.output_dir,
+                use_bayesian_calibration=True,
+            )
 
-            analyzer = BuildingAnalyzer()
-            # Note: This would need the full analyzer implementation
-            # For now, return None if analyzer not fully integrated
+            # Prepare building data dict for the analyzer
+            building_dict = {
+                "address": building_data.address,
+                "construction_year": building_data.construction_year,
+                "atemp_m2": building_data.atemp_m2,
+                "num_floors": building_data.num_floors,
+                "num_apartments": building_data.num_apartments,
+                "facade_material": building_data.facade_material,
+                "heating_system": building_data.heating_system,
+                "has_ftx": building_data.has_ftx,
+                "has_heat_pump": building_data.has_heat_pump,
+                "has_solar": building_data.has_solar,
+                # Detailed energy source kWh (crucial for existing measures detection!)
+                "exhaust_air_hp_kwh": building_data.exhaust_air_hp_kwh,
+                "ground_source_hp_kwh": building_data.ground_source_hp_kwh,
+                "air_source_hp_kwh": building_data.air_source_hp_kwh,
+                "district_heating_kwh": building_data.district_heating_kwh,
+                "declared_energy_kwh_m2": building_data.declared_energy_kwh_m2,
+                "energy_class": building_data.energy_class,
+                # Geometry data (critical for EnergyPlus simulation)
+                "footprint_area_m2": building_data.footprint_area_m2,
+                "height_m": building_data.height_m,
+                "footprint_coords": building_data.footprint_coords,
+                "building_width_m": building_data.building_width_m,
+                "building_length_m": building_data.building_length_m,
+            }
 
+            # Run async analyzer (convert to sync)
+            logger.info("Running full energy analysis pipeline...")
+
+            # Use asyncio.run for sync context, or get existing loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Already in async context
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        analyzer.analyze(
+                            address=building_data.address,
+                            lat=building_data.latitude,
+                            lon=building_data.longitude,
+                            building_data=building_dict,
+                            run_simulations=True,
+                        )
+                    )
+                    result = future.result(timeout=600)  # 10 min timeout
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run
+                result = asyncio.run(
+                    analyzer.analyze(
+                        address=building_data.address,
+                        lat=building_data.latitude,
+                        lon=building_data.longitude,
+                        building_data=building_dict,
+                        run_simulations=True,
+                    )
+                )
+
+            logger.info(f"Energy analysis complete: {len(result.get('ecm_results', []))} ECMs analyzed")
+
+            # Update building_data with AI-detected material from full_pipeline
+            # This is more accurate than era-based guessing
+            detected_material = result.get("facade_material") or result.get("building_context", {}).get("facade_material")
+            if detected_material and detected_material not in ("unknown", "render"):
+                building_data.facade_material = detected_material
+                logger.info(f"Updated facade material from AI detection: {detected_material}")
+
+            return result
+
+        except ImportError as e:
+            logger.warning(f"FullPipelineAnalyzer not available: {e}")
             return None
-
         except Exception as e:
-            logger.warning(f"Energy analysis skipped: {e}")
+            logger.warning(f"Energy analysis failed: {e}", exc_info=True)
             return None
 
     def _generate_maintenance_plan(
@@ -1407,6 +1602,108 @@ class AddressPipeline:
                 notes=effektvakt_result.notes or [],
             )
 
+        # Extract ECM results from analysis
+        from ..reporting.html_report import ECMResult
+
+        ecm_results_list = []
+        baseline_kwh_m2 = building_data.declared_energy_kwh_m2
+
+        if analysis_results:
+            # Get baseline from calibration if available
+            baseline_kwh_m2 = analysis_results.get("baseline_kwh_m2", baseline_kwh_m2)
+
+            # Convert ECM result dicts to ECMResult objects
+            raw_ecm_results = analysis_results.get("ecm_results", [])
+            for ecm in raw_ecm_results:
+                try:
+                    # Get result kWh - full_pipeline uses "heating_kwh_m2" key
+                    result_kwh = ecm.get("heating_kwh_m2") or ecm.get("result_kwh_m2") or baseline_kwh_m2
+                    savings_kwh = baseline_kwh_m2 - result_kwh
+
+                    ecm_results_list.append(ECMResult(
+                        id=ecm.get("ecm_id", "unknown"),
+                        name=ecm.get("ecm_name", ecm.get("ecm_id", "Unknown")),
+                        category=ecm.get("category", "Other"),
+                        baseline_kwh_m2=baseline_kwh_m2,
+                        result_kwh_m2=result_kwh,
+                        savings_kwh_m2=savings_kwh,
+                        savings_percent=ecm.get("savings_percent", 0),
+                        estimated_cost_sek=ecm.get("investment_sek", 0),
+                        simple_payback_years=ecm.get("simple_payback_years", 99),
+                        # Multi-end-use energy tracking
+                        total_kwh_m2=ecm.get("total_kwh_m2", 0),
+                        total_savings_percent=ecm.get("total_savings_percent", 0),
+                        heating_kwh_m2=ecm.get("heating_kwh_m2", result_kwh),
+                        dhw_kwh_m2=ecm.get("dhw_kwh_m2", 0),
+                        property_el_kwh_m2=ecm.get("property_el_kwh_m2", 0),
+                        savings_by_end_use=ecm.get("savings_by_end_use"),
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to parse ECM result: {e}")
+
+        # Extract existing measures from context (convert enum values to strings)
+        existing_measures = []
+        if analysis_results and "context" in analysis_results:
+            context = analysis_results["context"]
+            if hasattr(context, "existing_measures") and context.existing_measures:
+                # Convert ExistingMeasure enums to their string values
+                existing_measures = [m.value if hasattr(m, 'value') else str(m) for m in context.existing_measures]
+
+        # Update building_data with correct data sources from fusion
+        if analysis_results and "data_fusion" in analysis_results:
+            fusion = analysis_results["data_fusion"]
+            if hasattr(fusion, "data_sources") and fusion.data_sources:
+                # Use fusion sources which correctly includes google_streetview, google_solar, etc.
+                building_data.data_sources = fusion.data_sources
+
+        # Get applicable ECM IDs
+        applicable_ecm_ids = [e.id for e in ecm_results_list]
+
+        # Convert snowball packages to report format
+        from ..analysis.package_generator import ECMPackage, ECMPackageItem
+        report_packages = []
+        if analysis_results and "snowball_packages" in analysis_results:
+            snowball_pkgs = analysis_results["snowball_packages"]
+            for pkg in snowball_pkgs:
+                # Create ECMPackageItem for each ECM in the package
+                ecm_items = []
+                for ecm_id in pkg.ecm_ids:
+                    # Find the ECM result
+                    matching_ecm = next((e for e in ecm_results_list if e.id == ecm_id), None)
+                    if matching_ecm:
+                        ecm_items.append(ECMPackageItem(
+                            id=ecm_id,
+                            name=matching_ecm.name,
+                            individual_savings_percent=matching_ecm.savings_percent,
+                            estimated_cost_sek=matching_ecm.estimated_cost_sek,
+                        ))
+
+                # Create ECMPackage
+                report_packages.append(ECMPackage(
+                    id=f"pkg_{pkg.package_number}",
+                    name=pkg.package_name,
+                    description=f"Steg {pkg.package_number}: {pkg.package_name}",
+                    ecms=ecm_items,
+                    combined_savings_percent=pkg.savings_percent,
+                    combined_savings_kwh_m2=pkg.combined_kwh_m2,
+                    total_cost_sek=pkg.total_investment_sek,
+                    simple_payback_years=pkg.simple_payback_years,
+                    annual_cost_savings_sek=pkg.annual_savings_sek,
+                    co2_reduction_kg_m2=0,  # Not calculated in snowball packages
+                ))
+
+        # Get baseline energy breakdown from analysis results
+        baseline_dhw_kwh_m2 = 0
+        baseline_property_el_kwh_m2 = 0
+        baseline_cooling_kwh_m2 = 0
+        baseline_total_kwh_m2 = 0
+        if analysis_results and "baseline_energy" in analysis_results:
+            be = analysis_results["baseline_energy"]
+            baseline_dhw_kwh_m2 = be.get("dhw_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "dhw_kwh_m2", 0)
+            baseline_property_el_kwh_m2 = be.get("property_el_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "property_el_kwh_m2", 0)
+            baseline_cooling_kwh_m2 = be.get("cooling_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "cooling_kwh_m2", 0)
+            baseline_total_kwh_m2 = be.get("total_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "total_kwh_m2", 0)
+
         # Build report data
         report_data = ReportData(
             building_name=building_data.address,
@@ -1418,12 +1715,17 @@ class AddressPipeline:
             floors=building_data.num_floors,
             energy_class=building_data.energy_class,
             declared_heating_kwh_m2=building_data.declared_energy_kwh_m2,
-            baseline_heating_kwh_m2=building_data.declared_energy_kwh_m2,  # Use declared as baseline
-            existing_measures=[],
-            applicable_ecms=[],
-            excluded_ecms=[],
-            ecm_results=[],
-            packages=[],
+            baseline_heating_kwh_m2=baseline_kwh_m2,
+            existing_measures=existing_measures,
+            applicable_ecms=applicable_ecm_ids,
+            excluded_ecms=[],  # Could populate from filter result if available
+            ecm_results=ecm_results_list,
+            # Multi-end-use energy breakdown
+            baseline_dhw_kwh_m2=baseline_dhw_kwh_m2,
+            baseline_property_el_kwh_m2=baseline_property_el_kwh_m2,
+            baseline_cooling_kwh_m2=baseline_cooling_kwh_m2,
+            baseline_total_kwh_m2=baseline_total_kwh_m2,
+            packages=report_packages,
             maintenance_plan=mp_data,
             effektvakt=eff_data,
             num_apartments=building_data.num_apartments,

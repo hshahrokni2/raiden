@@ -27,6 +27,7 @@ from .surrogate import (
     SurrogateTrainer,
     SurrogatePredictor,
     TrainedSurrogate,
+    FixedParamPredictor,
 )
 from .bayesian import (
     Prior,
@@ -35,10 +36,27 @@ from .bayesian import (
     CalibrationPosterior,
     ABCSMCCalibrator,
     UncertaintyPropagator,
+    ECMUncertaintyPropagator,
+    ECM_PARAMETER_EFFECTS,
+    get_ecm_effect,
 )
 from .calibrator_v2 import (
     CalibrationResultV2,
     BayesianCalibrator,
+)
+from .metrics import (
+    CalibrationMetrics,
+    compute_uncertainty_adjusted_metrics,
+)
+from .pipeline import (
+    CalibrationResult,
+    BayesianCalibrationPipeline,
+)
+from .sensitivity import (
+    MorrisResults,
+    MorrisScreening,
+    run_morris_analysis,
+    AdaptiveCalibration,
 )
 
 __all__ = [
@@ -47,6 +65,7 @@ __all__ = [
     "SurrogateTrainer",
     "SurrogatePredictor",
     "TrainedSurrogate",
+    "FixedParamPredictor",
     # Bayesian
     "Prior",
     "CalibrationPriors",
@@ -54,7 +73,22 @@ __all__ = [
     "CalibrationPosterior",
     "ABCSMCCalibrator",
     "UncertaintyPropagator",
+    # ECM Uncertainty
+    "ECMUncertaintyPropagator",
+    "ECM_PARAMETER_EFFECTS",
+    "get_ecm_effect",
     # Interface
     "CalibrationResultV2",
     "BayesianCalibrator",
+    # Metrics
+    "CalibrationMetrics",
+    "compute_uncertainty_adjusted_metrics",
+    # Pipeline
+    "CalibrationResult",
+    "BayesianCalibrationPipeline",
+    # Sensitivity
+    "MorrisResults",
+    "MorrisScreening",
+    "run_morris_analysis",
+    "AdaptiveCalibration",
 ]

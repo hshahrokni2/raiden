@@ -51,6 +51,11 @@ dependencies = [
     "scikit-learn>=1.3.0",
     "scipy>=1.11",
     "joblib>=1.3",
+    "SALib>=1.4",  # Sensitivity analysis
+
+    # Database
+    "supabase>=2.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

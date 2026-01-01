@@ -499,3 +499,239 @@ def calculate_building_geometry(
     """
     calculator = BuildingGeometryCalculator()
     return calculator.calculate(footprint_coords, height_m, floors, wwr_by_orientation)
+
+
+# =============================================================================
+# BUILDING COMPLEXITY DETECTION
+# =============================================================================
+
+@dataclass
+class BuildingComplexity:
+    """
+    Building complexity assessment for multi-zone model triggering.
+
+    Determines whether a single-zone thermal model is adequate or if
+    multi-zone modeling is needed for accurate energy simulation.
+    """
+    # Complexity score (0-100)
+    # 0-30: Simple (single-zone OK)
+    # 31-60: Moderate (single-zone with caution)
+    # 61-100: Complex (multi-zone recommended)
+    complexity_score: float
+
+    # Recommendation
+    recommended_zones: int  # 1 = single zone, 2+ = multi-zone
+    single_zone_adequate: bool
+    confidence: float  # 0-1
+
+    # Contributing factors
+    aspect_ratio: float  # Length/width ratio
+    num_corners: int  # Number of vertices (4 = rectangular)
+    convexity: float  # 0-1 (1 = fully convex)
+    floor_area_m2: float  # Per floor
+    has_atrium: bool
+    num_orientations: int  # How many distinct facade directions
+
+    # Warning message
+    warning: str
+    warning_sv: str  # Swedish
+
+
+def assess_building_complexity(
+    footprint_coords: List[Tuple[float, float]],
+    gross_floor_area_m2: float,
+    floors: int,
+) -> BuildingComplexity:
+    """
+    Assess building complexity for thermal zoning decisions.
+
+    Uses multiple heuristics to determine if single-zone modeling is adequate:
+    1. Aspect ratio: Long/thin buildings need multiple zones
+    2. Corners: Non-rectangular shapes need zone decomposition
+    3. Convexity: L/U/T shapes have internal corners
+    4. Floor area: Large floors have temperature gradients
+    5. Orientations: Multiple distinct facade directions
+
+    Args:
+        footprint_coords: List of (lon, lat) in WGS84
+        gross_floor_area_m2: Total floor area (Atemp)
+        floors: Number of floors
+
+    Returns:
+        BuildingComplexity assessment
+    """
+    # Convert to local meters
+    calc = BuildingGeometryCalculator()
+    local_coords = calc._wgs84_to_local(footprint_coords)
+
+    # Basic metrics
+    num_corners = len(local_coords) - 1  # Subtract 1 if closed polygon
+    if local_coords[0] == local_coords[-1]:
+        num_corners = len(local_coords) - 1
+
+    floor_area_m2 = gross_floor_area_m2 / floors if floors > 0 else gross_floor_area_m2
+
+    # Calculate bounding box for aspect ratio
+    xs = [p[0] for p in local_coords]
+    ys = [p[1] for p in local_coords]
+    width = max(xs) - min(xs)
+    length = max(ys) - min(ys)
+    aspect_ratio = max(width, length) / max(min(width, length), 0.1)
+
+    # Calculate convexity (area of convex hull / actual area)
+    footprint_area = calc._calculate_polygon_area(local_coords)
+    convex_hull_area = _calculate_convex_hull_area(local_coords)
+    convexity = footprint_area / convex_hull_area if convex_hull_area > 0 else 1.0
+
+    # Check for atrium (internal void)
+    has_atrium = convexity < 0.8  # Significant interior void
+
+    # Count distinct orientations
+    segments = calc._calculate_wall_segments(local_coords)
+    orientations = set(s.orientation for s in segments)
+    num_orientations = len(orientations)
+
+    # Calculate complexity score
+    score = 0.0
+
+    # Aspect ratio contribution (0-25 points)
+    # Rectangular = 1.0, Long = 3+
+    if aspect_ratio > 3.0:
+        score += 25
+    elif aspect_ratio > 2.0:
+        score += 15
+    elif aspect_ratio > 1.5:
+        score += 5
+
+    # Corners contribution (0-25 points)
+    # 4 = rectangular, 6+ = complex shape
+    if num_corners > 8:
+        score += 25
+    elif num_corners > 6:
+        score += 20
+    elif num_corners > 4:
+        score += 10
+
+    # Convexity contribution (0-25 points)
+    # 1.0 = convex, <0.8 = significant concavity (L/U/T shape)
+    if convexity < 0.7:
+        score += 25
+    elif convexity < 0.8:
+        score += 15
+    elif convexity < 0.9:
+        score += 5
+
+    # Floor area contribution (0-25 points)
+    # Small floors = uniform temp, Large floors = gradients
+    if floor_area_m2 > 3000:
+        score += 25
+    elif floor_area_m2 > 1500:
+        score += 15
+    elif floor_area_m2 > 800:
+        score += 5
+
+    # Clamp to 0-100
+    score = max(0, min(100, score))
+
+    # Determine recommendation
+    if score <= 30:
+        single_zone_adequate = True
+        recommended_zones = 1
+        confidence = 0.9
+        warning = ""
+        warning_sv = ""
+    elif score <= 60:
+        single_zone_adequate = True
+        recommended_zones = 1
+        confidence = 0.7
+        warning = (
+            f"Moderate building complexity (score: {score:.0f}/100). "
+            f"Single-zone model may underestimate orientation effects. "
+            f"Consider multi-zone for detailed analysis."
+        )
+        warning_sv = (
+            f"Måttlig byggnadskomplexitet (poäng: {score:.0f}/100). "
+            f"Enzonmodell kan underskatta orienteringseffekter. "
+            f"Överväg flerzonmodell för detaljerad analys."
+        )
+    else:
+        single_zone_adequate = False
+        recommended_zones = max(2, min(floors, 4))  # At least 2, max 4
+        confidence = 0.5
+        warning = (
+            f"High building complexity (score: {score:.0f}/100). "
+            f"Single-zone model may have ±15-25% error. "
+            f"Factors: aspect ratio {aspect_ratio:.1f}, {num_corners} corners, "
+            f"convexity {convexity:.2f}, floor area {floor_area_m2:.0f} m². "
+            f"Multi-zone modeling recommended for accurate results."
+        )
+        warning_sv = (
+            f"Hög byggnadskomplexitet (poäng: {score:.0f}/100). "
+            f"Enzonmodell kan ha ±15-25% fel. "
+            f"Faktorer: sidoförhållande {aspect_ratio:.1f}, {num_corners} hörn, "
+            f"konvexitet {convexity:.2f}, golvyta {floor_area_m2:.0f} m². "
+            f"Flerzonmodellering rekommenderas för noggranna resultat."
+        )
+
+    return BuildingComplexity(
+        complexity_score=score,
+        recommended_zones=recommended_zones,
+        single_zone_adequate=single_zone_adequate,
+        confidence=confidence,
+        aspect_ratio=aspect_ratio,
+        num_corners=num_corners,
+        convexity=convexity,
+        floor_area_m2=floor_area_m2,
+        has_atrium=has_atrium,
+        num_orientations=num_orientations,
+        warning=warning,
+        warning_sv=warning_sv,
+    )
+
+
+def _calculate_convex_hull_area(coords: List[Tuple[float, float]]) -> float:
+    """
+    Calculate area of convex hull using Graham scan.
+
+    Simple implementation for polygon convex hull.
+    """
+    if len(coords) < 3:
+        return 0.0
+
+    # Find lowest point
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    points = sorted(set(coords))
+    if len(points) < 3:
+        return 0.0
+
+    # Build lower hull
+    lower = []
+    for p in points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+
+    # Build upper hull
+    upper = []
+    for p in reversed(points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+
+    # Concatenate hulls
+    hull = lower[:-1] + upper[:-1]
+
+    # Calculate area using shoelace formula
+    n = len(hull)
+    if n < 3:
+        return 0.0
+
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += hull[i][0] * hull[j][1]
+        area -= hull[j][0] * hull[i][1]
+
+    return abs(area) / 2.0

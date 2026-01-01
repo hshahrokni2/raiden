@@ -1033,40 +1033,34 @@ Respond in JSON format:
         return prompt
 
     def _call_claude_vision(self, image_base64: str, prompt: str) -> Optional[str]:
-        """Call Claude Vision API."""
+        """Call Komilion/OpenRouter Vision API."""
         try:
-            import anthropic
+            from ..ai.llm_client import LLMClient
+            import tempfile
 
-            client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+            # Check for API key
+            komilion_key = os.environ.get("KOMILION_API_KEY")
+            if not komilion_key:
+                logger.warning("KOMILION_API_KEY not set for visual analysis")
+                return None
 
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": image_base64,
-                                },
-                            },
-                            {
-                                "type": "text",
-                                "text": prompt,
-                            },
-                        ],
-                    }
-                ],
-            )
+            # Save base64 image to temp file
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp.write(base64.b64decode(image_base64))
+                temp_path = tmp.name
 
-            return message.content[0].text
+            client = LLMClient(mode="balanced")
+            response = client.analyze_image(image_path=temp_path, prompt=prompt)
+
+            # Clean up temp file
+            os.unlink(temp_path)
+
+            if response:
+                return response.content
+            return None
 
         except Exception as e:
-            logger.warning(f"Claude Vision API call failed: {e}")
+            logger.warning(f"Komilion Vision API call failed: {e}")
             return None
 
     def _parse_visual_response(self, response: str) -> Optional[AIVisualAnalysis]:

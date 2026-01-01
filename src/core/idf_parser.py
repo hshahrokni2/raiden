@@ -472,6 +472,130 @@ class IDFParser:
         logger.debug(f"Set lighting power density to {watts_per_m2} W/m² for {count} zones")
         return count
 
+    # ========== Wall/Roof U-Value ==========
+
+    def get_material_by_name(self, idf: IDF, name: str) -> Optional[Any]:
+        """Get a Material object by name."""
+        materials = idf.idfobjects['Material']
+        for mat in materials:
+            if getattr(mat, 'Name', '') == name:
+                return mat
+        return None
+
+    def set_wall_u_value(self, idf: IDF, u_value: float) -> int:
+        """
+        Set wall U-value by adjusting WallInsulation thickness.
+
+        Args:
+            idf: IDF object
+            u_value: Target wall assembly U-value in W/m²K
+
+        Returns:
+            Number of materials modified
+        """
+        # Find WallInsulation material
+        insulation = self.get_material_by_name(idf, 'WallInsulation')
+        if not insulation:
+            logger.warning("WallInsulation material not found")
+            return 0
+
+        conductivity = getattr(insulation, 'Conductivity', 0.035)  # Default mineral wool
+
+        # Calculate required insulation R-value
+        # R_total = 1/U, subtract surface resistances and concrete
+        # Surface resistances: ~0.17 m²K/W (combined internal + external)
+        # Concrete 200mm: R = 0.2/1.0 = 0.2 m²K/W
+        r_total = 1.0 / u_value
+        r_surface = 0.17
+        r_concrete = 0.20
+        r_insulation = max(0.1, r_total - r_surface - r_concrete)
+
+        # thickness = R × conductivity
+        new_thickness = r_insulation * conductivity
+
+        # Clamp thickness to reasonable range (10mm to 500mm)
+        new_thickness = max(0.01, min(0.50, new_thickness))
+
+        insulation.Thickness = new_thickness
+        logger.debug(f"Set WallInsulation thickness to {new_thickness:.3f}m for U={u_value:.2f}")
+        return 1
+
+    def set_roof_u_value(self, idf: IDF, u_value: float) -> int:
+        """
+        Set roof U-value by adjusting RoofInsulation thickness.
+
+        Args:
+            idf: IDF object
+            u_value: Target roof assembly U-value in W/m²K
+
+        Returns:
+            Number of materials modified
+        """
+        # Find RoofInsulation material
+        insulation = self.get_material_by_name(idf, 'RoofInsulation')
+        if not insulation:
+            logger.warning("RoofInsulation material not found")
+            return 0
+
+        conductivity = getattr(insulation, 'Conductivity', 0.035)  # Default mineral wool
+
+        # Calculate required insulation R-value
+        # Similar to wall but roof typically has less concrete
+        r_total = 1.0 / u_value
+        r_surface = 0.17  # Combined internal + external
+        r_deck = 0.10     # Roof deck/membrane
+        r_insulation = max(0.1, r_total - r_surface - r_deck)
+
+        # thickness = R × conductivity
+        new_thickness = r_insulation * conductivity
+
+        # Clamp thickness to reasonable range (10mm to 600mm)
+        new_thickness = max(0.01, min(0.60, new_thickness))
+
+        insulation.Thickness = new_thickness
+        logger.debug(f"Set RoofInsulation thickness to {new_thickness:.3f}m for U={u_value:.2f}")
+        return 1
+
+    # ========== Heating Setpoint ==========
+
+    def get_heating_setpoint(self, idf: IDF) -> Optional[float]:
+        """
+        Get heating setpoint from Schedule:Constant named 'HeatSet'.
+
+        Returns:
+            Heating setpoint temperature in °C, or None if not found
+        """
+        schedules = idf.idfobjects['Schedule:Constant']
+        for sched in schedules:
+            if getattr(sched, 'Name', '') == 'HeatSet':
+                return getattr(sched, 'Hourly_Value', None)
+        return None
+
+    def set_heating_setpoint(self, idf: IDF, temperature: float) -> int:
+        """
+        Set heating setpoint by modifying Schedule:Constant 'HeatSet'.
+
+        Args:
+            idf: IDF object
+            temperature: Heating setpoint in °C (typically 18-23)
+
+        Returns:
+            Number of schedules modified
+        """
+        schedules = idf.idfobjects['Schedule:Constant']
+        count = 0
+
+        for sched in schedules:
+            if getattr(sched, 'Name', '') == 'HeatSet':
+                sched.Hourly_Value = temperature
+                count += 1
+                logger.debug(f"Set HeatSet schedule to {temperature}°C")
+
+        if count == 0:
+            logger.warning("HeatSet schedule not found")
+
+        return count
+
     # ========== Utility Methods ==========
 
     def get_building_name(self, idf: IDF) -> Optional[str]:

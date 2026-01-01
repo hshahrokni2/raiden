@@ -23,7 +23,25 @@ from pathlib import Path
 import logging
 
 from ..ecm.idf_modifier import IDFModifier
+from ..ecm.dependencies import (
+    get_dependency_matrix,
+    validate_package,
+    get_package_synergy,
+    ECMDependencyMatrix,
+)
 from ..roi.costs_sweden import SwedishCosts, ECM_COSTS, ENERGY_PRICES, CostCategory
+
+# Try to import V2 cost model
+try:
+    from ..roi.costs_sweden_v2 import (
+        SwedishCostCalculatorV2,
+        ECM_COSTS_V2,
+        Region,
+        quick_estimate,
+    )
+    COSTS_V2_AVAILABLE = True
+except ImportError:
+    COSTS_V2_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +77,18 @@ class SimulatedPackage:
     simulated_heating_kwh_m2: float
     # Interaction factor (actual vs sum)
     interaction_factor: float
+    # Synergy factor from dependency matrix
+    synergy_factor: float = 1.0
     # Economics
-    total_cost_sek: float
-    annual_savings_sek: float
-    simple_payback_years: float
-    co2_reduction_kg_m2: float
+    total_cost_sek: float = 0
+    annual_savings_sek: float = 0
+    simple_payback_years: float = 0
+    co2_reduction_kg_m2: float = 0
+    # Cost breakdown (if using V2 model)
+    cost_breakdown: Optional[Dict] = None
+    # Validation
+    validation_issues: List[str] = field(default_factory=list)
+    is_valid: bool = True
     # Simulation metadata
     idf_path: Optional[Path] = None
     simulation_success: bool = False
@@ -134,6 +159,9 @@ class PackageSimulator:
         costs: Optional[SwedishCosts] = None,
         energy_type: str = 'district_heating',
         co2_intensity_kg_kwh: float = 0.05,
+        region: str = 'medium_city',
+        floor_area_m2: float = 1000,
+        use_v2_costs: bool = True,
     ):
         """
         Initialize package simulator.
@@ -142,11 +170,33 @@ class PackageSimulator:
             costs: Swedish cost database (defaults to built-in)
             energy_type: Energy type for price lookup
             co2_intensity_kg_kwh: CO2 intensity for Swedish grid
+            region: Swedish region for cost adjustments
+            floor_area_m2: Building floor area for cost scaling
+            use_v2_costs: Use V2 cost model if available
         """
         self.costs = costs or SwedishCosts()
         self.energy_type = energy_type
         self.co2_intensity = co2_intensity_kg_kwh
         self.modifier = IDFModifier()
+        self.dependency_matrix = get_dependency_matrix()
+        self.floor_area_m2 = floor_area_m2
+
+        # Initialize V2 calculator if available and requested
+        self.use_v2_costs = use_v2_costs and COSTS_V2_AVAILABLE
+        self.v2_calculator = None
+        if self.use_v2_costs:
+            region_map = {
+                'stockholm': Region.STOCKHOLM,
+                'gothenburg': Region.GOTHENBURG,
+                'malmo': Region.MALMO,
+                'medium_city': Region.MEDIUM_CITY,
+                'rural': Region.RURAL,
+                'norrland': Region.NORRLAND,
+            }
+            self.v2_calculator = SwedishCostCalculatorV2(
+                region=region_map.get(region.lower(), Region.MEDIUM_CITY),
+                year=2025,
+            )
 
     def create_and_simulate_packages(
         self,
@@ -387,8 +437,16 @@ class PackageSimulator:
         baseline_kwh_m2: float,
         atemp_m2: float,
     ) -> SimulatedPackage:
-        """Create a package from selected ECMs."""
+        """Create a package from selected ECMs with validation and synergy."""
         energy_price = self.costs.energy_price(self.energy_type)
+        ecm_ids = [e.id for e in ecms]
+
+        # Validate package using dependency matrix
+        is_valid, validation_issues = self.dependency_matrix.validate_combination(ecm_ids)
+
+        # Calculate synergy factor from dependency matrix
+        synergy_factor = self.dependency_matrix.calculate_synergy_factor(ecm_ids)
+        logger.debug(f"Package {pkg_id} synergy factor: {synergy_factor:.2f}")
 
         # Sum individual savings (for comparison)
         sum_savings_pct = sum(e.individual_savings_percent for e in ecms)
@@ -397,17 +455,39 @@ class PackageSimulator:
         # Cap at realistic maximum
         sum_savings_pct = min(sum_savings_pct, 60)
 
-        # Total cost
-        total_cost = sum(e.cost_sek for e in ecms)
+        # Calculate total cost using V2 model if available
+        total_cost = 0
+        cost_breakdown = {}
+
+        if self.use_v2_costs and self.v2_calculator:
+            for ecm in ecms:
+                try:
+                    breakdown = self.v2_calculator.calculate_ecm_cost(
+                        ecm_id=ecm.id,
+                        quantity=self._estimate_quantity(ecm.id, atemp_m2),
+                        floor_area_m2=atemp_m2,
+                    )
+                    total_cost += breakdown.total_after_deductions
+                    cost_breakdown[ecm.id] = breakdown.to_dict()
+                except (ValueError, KeyError):
+                    # ECM not in V2 database, use V1 cost
+                    total_cost += ecm.cost_sek
+        else:
+            total_cost = sum(e.cost_sek for e in ecms)
+
+        # Apply synergy factor to estimated savings (simulation will refine this)
+        # Synergy > 1 = better combined performance
+        # Synergy < 1 = diminishing returns
+        estimated_interaction = 0.7 * synergy_factor  # Base 0.7 adjusted by synergy
 
         # Estimated annual savings (will be replaced by simulation)
-        annual_savings = sum_savings_kwh * atemp_m2 * energy_price.price_sek_per_kwh
+        annual_savings = sum_savings_kwh * atemp_m2 * energy_price.price_sek_per_kwh * estimated_interaction
 
         # Payback
         payback = total_cost / annual_savings if annual_savings > 0 else 999
 
         # CO2
-        co2_reduction = sum_savings_kwh * self.co2_intensity
+        co2_reduction = sum_savings_kwh * self.co2_intensity * estimated_interaction
 
         return SimulatedPackage(
             id=pkg_id,
@@ -418,16 +498,82 @@ class PackageSimulator:
             ecms=ecms,
             sum_individual_savings_percent=sum_savings_pct,
             sum_individual_savings_kwh_m2=sum_savings_kwh,
-            # Placeholder until simulation
-            simulated_savings_percent=sum_savings_pct * 0.7,  # Conservative estimate
-            simulated_savings_kwh_m2=sum_savings_kwh * 0.7,
-            simulated_heating_kwh_m2=baseline_kwh_m2 * (1 - sum_savings_pct * 0.7 / 100),
-            interaction_factor=0.7,
+            # Placeholder until simulation (adjusted by synergy)
+            simulated_savings_percent=sum_savings_pct * estimated_interaction,
+            simulated_savings_kwh_m2=sum_savings_kwh * estimated_interaction,
+            simulated_heating_kwh_m2=baseline_kwh_m2 * (1 - sum_savings_pct * estimated_interaction / 100),
+            interaction_factor=estimated_interaction,
+            synergy_factor=synergy_factor,
             total_cost_sek=total_cost,
-            annual_savings_sek=annual_savings * 0.7,
-            simple_payback_years=payback / 0.7,
-            co2_reduction_kg_m2=co2_reduction * 0.7,
+            annual_savings_sek=annual_savings,
+            simple_payback_years=payback,
+            co2_reduction_kg_m2=co2_reduction,
+            cost_breakdown=cost_breakdown if cost_breakdown else None,
+            validation_issues=validation_issues,
+            is_valid=is_valid,
         )
+
+    def _estimate_quantity(self, ecm_id: str, atemp_m2: float) -> float:
+        """
+        Estimate quantity for an ECM based on building area.
+
+        Uses consistent scaling factors aligned with costs_sweden_v2.py:
+        - Wall area: 50% of Atemp (typical MFH surface-to-floor ratio)
+        - Roof area: Atemp / num_floors (footprint)
+        - Window area: 15% of Atemp (typical WWR)
+        - Per apartment: Atemp / 60 m² per apartment
+        """
+        num_floors = getattr(self, 'num_floors', 4)  # Default 4 floors
+        footprint_m2 = atemp_m2 / num_floors
+        num_apartments = max(1, int(atemp_m2 / 60))
+
+        # Get scaling info from V2 database if available
+        if self.use_v2_costs and ecm_id in ECM_COSTS_V2:
+            model = ECM_COSTS_V2[ecm_id]
+            scales_with = model.scales_with
+
+            if scales_with == "floor_area":
+                return atemp_m2
+            elif scales_with == "wall_area":
+                return atemp_m2 * 0.5  # Fixed: was 0.8, should be 0.5
+            elif scales_with == "roof_area":
+                return footprint_m2  # Fixed: was atemp/7, now dynamic
+            elif scales_with == "window_area":
+                return atemp_m2 * 0.15  # Fixed: was 0.17, should be 0.15
+            elif scales_with == "per_apartment":
+                return num_apartments  # Fixed: was atemp/75, should be /60
+            elif scales_with == "capacity":
+                # Capacity depends on ECM type
+                if "solar" in ecm_id or "pv" in ecm_id:
+                    return footprint_m2 * 0.15  # 15% of roof for PV
+                else:
+                    return atemp_m2 * 0.04  # ~40 W/m² heating capacity
+            elif scales_with in ("unit", "per_building"):
+                return 1
+            else:
+                return 1
+
+        # Fallback estimates from cost unit
+        cost_data = ECM_COSTS.get(ecm_id)
+        if cost_data:
+            unit = cost_data.unit
+            if unit == 'm² floor':
+                return atemp_m2
+            elif unit == 'm² wall':
+                return atemp_m2 * 0.5
+            elif unit == 'm² roof':
+                return footprint_m2
+            elif unit == 'm² window':
+                return atemp_m2 * 0.15
+            elif unit == 'kWp':
+                return footprint_m2 * 0.15
+            elif unit == 'kW':
+                return atemp_m2 * 0.04
+            elif unit == 'building':
+                return 1
+            elif unit == 'radiator':
+                return atemp_m2 / 15
+        return 1
 
     def _run_package_simulations(
         self,

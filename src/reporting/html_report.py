@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import json
 
-from src.analysis.package_generator import PackageGenerator, ECMPackage, ECM_COSTS_PER_M2
+from src.analysis.package_generator import (
+    PackageGenerator,
+    ECMPackage,
+    ECM_COSTS_PER_M2_FALLBACK,
+    get_ecm_cost_v2,
+    get_energy_price,
+)
 
 
 @dataclass
@@ -30,6 +36,13 @@ class ECMResult:
     savings_percent: float
     estimated_cost_sek: float
     simple_payback_years: float
+    # Multi-end-use energy tracking
+    total_kwh_m2: float = 0  # Total energy (heating + DHW + property_el)
+    total_savings_percent: float = 0  # Savings including all end-uses
+    heating_kwh_m2: float = 0  # Heating component
+    dhw_kwh_m2: float = 0  # Domestic hot water component
+    property_el_kwh_m2: float = 0  # Property electricity (lighting, fans, pumps)
+    savings_by_end_use: Optional[Dict[str, float]] = None  # Per-end-use breakdown
 
 
 @dataclass
@@ -66,6 +79,22 @@ class EffektvaktData:
 
 
 @dataclass
+class RenovationHistoryData:
+    """Renovation history from Gripen energy declarations."""
+    has_history: bool = False
+    is_renovated: bool = False
+    original_year: int = 0
+    original_energy_class: str = ""
+    original_kwh_m2: float = 0
+    current_year: int = 0
+    current_energy_class: str = ""
+    current_kwh_m2: float = 0
+    energy_class_improvement: int = 0  # Positive = improved (e.g., F→C = 3)
+    kwh_reduction_percent: float = 0
+    declarations: List[Dict] = field(default_factory=list)  # All historical declarations
+
+
+@dataclass
 class ReportData:
     """Data for generating a report."""
     # Building info
@@ -86,6 +115,12 @@ class ReportData:
     excluded_ecms: List[Dict[str, str]]
     ecm_results: List[ECMResult]
 
+    # Multi-end-use energy breakdown (Swedish energideklaration)
+    baseline_dhw_kwh_m2: float = 0  # Tappvarmvatten (domestic hot water)
+    baseline_property_el_kwh_m2: float = 0  # Fastighetsel (property electricity)
+    baseline_cooling_kwh_m2: float = 0  # Komfortkyla (space cooling)
+    baseline_total_kwh_m2: float = 0  # Total energy (all end-uses)
+
     # Solar potential
     existing_pv_m2: float = 0
     remaining_pv_m2: float = 0
@@ -100,6 +135,9 @@ class ReportData:
     # Effektvakt (Peak demand optimization)
     effektvakt: EffektvaktData = None
 
+    # Renovation History (from Gripen energy declarations over time)
+    renovation_history: RenovationHistoryData = None
+
     # BRF Financials (for context)
     num_apartments: int = 0
     current_fund_sek: float = 0
@@ -108,6 +146,28 @@ class ReportData:
     # Metadata
     analysis_date: str = ""
     analysis_duration_seconds: float = 0
+
+    # Calibration quality (Bayesian calibration results)
+    calibration_method: str = ""  # "bayesian_abc_smc" or "simple"
+    calibrated_kwh_m2: float = 0
+    calibration_std: float = 0  # Uncertainty (std dev)
+    ashrae_nmbe: float = 0  # Normalized Mean Bias Error (%)
+    ashrae_cvrmse: float = 0  # Coefficient of Variation of RMSE (%)
+    ashrae_passes: bool = False  # Passes ASHRAE Guideline 14
+    surrogate_r2: float = 0  # Training R²
+    surrogate_test_r2: float = 0  # Test R² (generalization)
+    surrogate_is_overfit: bool = False  # Overfitting warning
+    morris_ranking: Optional[Dict[str, int]] = None  # Parameter importance ranking
+    calibrated_params: Optional[List[str]] = None  # Which params were calibrated
+    # Data quality assessment
+    calibration_data_resolution: str = "annual"  # "hourly", "monthly", "annual"
+    calibration_confidence: float = 0.5  # 0-1 confidence based on data quality
+    calibration_data_warning: str = ""  # Warning about data quality limitations
+
+    # Building complexity (for model accuracy assessment)
+    building_complexity_score: float = 0  # 0-100
+    building_complexity_warning: str = ""  # Warning if complex geometry
+    single_zone_adequate: bool = True  # Whether single-zone model is adequate
 
 
 HTML_TEMPLATE = '''<!DOCTYPE html>
@@ -628,11 +688,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 {ecm_results_table}
             </section>
 
+            {calibration_section}
+
+            {complexity_section}
+
             {solar_section}
 
             {packages_section}
 
             {effektvakt_section}
+
+            {renovation_history_section}
 
             {maintenance_plan_section}
 
@@ -717,8 +783,17 @@ class HTMLReportGenerator:
         # Generate effektvakt section
         effektvakt_section = self._format_effektvakt_section(data)
 
+        # Generate renovation history section (from Gripen energy declarations)
+        renovation_history_section = self._format_renovation_history_section(data)
+
         # Generate maintenance plan section
         maintenance_plan_section = self._format_maintenance_plan_section(data)
+
+        # Generate calibration quality section
+        calibration_section = self._format_calibration_section(data)
+
+        # Generate complexity section
+        complexity_section = self._format_complexity_section(data)
 
         # Format HTML
         html = HTML_TEMPLATE.format(
@@ -736,9 +811,12 @@ class HTMLReportGenerator:
             num_already_done=num_already_done,
             num_not_applicable=num_not_applicable,
             ecm_results_table=ecm_table,
+            calibration_section=calibration_section,
+            complexity_section=complexity_section,
             solar_section=solar_section,
             packages_section=packages_section,
             effektvakt_section=effektvakt_section,
+            renovation_history_section=renovation_history_section,
             maintenance_plan_section=maintenance_plan_section,
             recommendation_text=recommendation,
             analysis_date=data.analysis_date or datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -999,6 +1077,123 @@ class HTMLReportGenerator:
         </section>
         '''
 
+    def _format_renovation_history_section(self, data: ReportData) -> str:
+        """Format renovation history section (from Gripen energy declarations)."""
+        if not data.renovation_history or not data.renovation_history.has_history:
+            return ''
+
+        rh = data.renovation_history
+
+        # Build declarations timeline
+        timeline_html = ''
+        for decl in sorted(rh.declarations, key=lambda x: x.get('year', 0)):
+            year = decl.get('year', '')
+            energy_class = decl.get('energy_class', '')
+            kwh = decl.get('kwh_m2', 0)
+            timeline_html += f'''
+            <div class="timeline-item">
+                <div class="timeline-year">{year}</div>
+                <div class="timeline-content">
+                    <span class="energy-class {energy_class.lower()}">{energy_class}</span>
+                    <span class="kwh-value">{kwh:.0f} kWh/m²</span>
+                </div>
+            </div>
+            '''
+
+        # Determine status badge
+        if rh.is_renovated:
+            status_badge = '<span class="renovation-badge success">✓ Renoverad</span>'
+            status_text = f"Byggnaden har genomgått energirenovering med {rh.energy_class_improvement} klassförbättring och {rh.kwh_reduction_percent:.0f}% energiminskning."
+        else:
+            status_badge = '<span class="renovation-badge neutral">Ej renoverad</span>'
+            status_text = "Byggnaden har historiska energideklarationer men ingen betydande renovering har identifierats."
+
+        return f'''
+        <section>
+            <h2>📈 Energiutveckling</h2>
+            <p style="margin-bottom: 1rem; color: var(--gray-700);">
+                Historik från Boverkets energideklarationsregister (Gripen).
+            </p>
+
+            <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1.5rem;">
+                {status_badge}
+                <span style="color: var(--gray-600); font-size: 0.875rem;">{status_text}</span>
+            </div>
+
+            <div class="renovation-comparison" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+                <div class="stat-card" style="text-align: center;">
+                    <div style="font-size: 0.875rem; color: var(--gray-600);">Ursprunglig ({rh.original_year})</div>
+                    <div class="value" style="font-size: 2rem;">
+                        <span class="energy-class {rh.original_energy_class.lower()}" style="padding: 0.25rem 0.75rem; border-radius: 4px; font-weight: bold;">{rh.original_energy_class}</span>
+                    </div>
+                    <div style="font-size: 1.25rem; color: var(--gray-700);">{rh.original_kwh_m2:.0f} kWh/m²</div>
+                </div>
+
+                <div class="stat-card" style="text-align: center;">
+                    <div style="font-size: 0.875rem; color: var(--gray-600);">Nuvarande ({rh.current_year})</div>
+                    <div class="value" style="font-size: 2rem;">
+                        <span class="energy-class {rh.current_energy_class.lower()}" style="padding: 0.25rem 0.75rem; border-radius: 4px; font-weight: bold;">{rh.current_energy_class}</span>
+                    </div>
+                    <div style="font-size: 1.25rem; color: var(--gray-700);">{rh.current_kwh_m2:.0f} kWh/m²</div>
+                </div>
+            </div>
+
+            <h3 style="font-size: 1rem; margin-bottom: 0.5rem;">Tidslinje</h3>
+            <div class="timeline" style="display: flex; flex-direction: column; gap: 0.5rem; padding-left: 1rem; border-left: 2px solid var(--gray-300);">
+                {timeline_html}
+            </div>
+
+            <style>
+                .renovation-badge {{
+                    padding: 0.25rem 0.75rem;
+                    border-radius: 999px;
+                    font-size: 0.875rem;
+                    font-weight: 600;
+                }}
+                .renovation-badge.success {{
+                    background: #dcfce7;
+                    color: #166534;
+                }}
+                .renovation-badge.neutral {{
+                    background: #f3f4f6;
+                    color: #6b7280;
+                }}
+                .timeline-item {{
+                    display: flex;
+                    gap: 1rem;
+                    align-items: center;
+                    padding: 0.5rem 0;
+                }}
+                .timeline-year {{
+                    font-weight: 600;
+                    min-width: 3rem;
+                }}
+                .timeline-content {{
+                    display: flex;
+                    gap: 0.5rem;
+                    align-items: center;
+                }}
+                .energy-class {{
+                    padding: 0.125rem 0.5rem;
+                    border-radius: 4px;
+                    font-weight: 600;
+                    font-size: 0.875rem;
+                }}
+                .energy-class.a {{ background: #22c55e; color: white; }}
+                .energy-class.b {{ background: #84cc16; color: white; }}
+                .energy-class.c {{ background: #eab308; color: white; }}
+                .energy-class.d {{ background: #f97316; color: white; }}
+                .energy-class.e {{ background: #ef4444; color: white; }}
+                .energy-class.f {{ background: #dc2626; color: white; }}
+                .energy-class.g {{ background: #991b1b; color: white; }}
+                .kwh-value {{
+                    color: var(--gray-600);
+                    font-size: 0.875rem;
+                }}
+            </style>
+        </section>
+        '''
+
     def _format_maintenance_plan_section(self, data: ReportData) -> str:
         """Format maintenance plan (long-term cash flow) section."""
         if not data.maintenance_plan:
@@ -1104,27 +1299,282 @@ class HTMLReportGenerator:
         </section>
         '''
 
+    def _format_calibration_section(self, data: ReportData) -> str:
+        """Format calibration quality section with ASHRAE metrics and Morris ranking."""
+        if not data.calibration_method:
+            return ''
+
+        # Determine ASHRAE pass/fail styling
+        nmbe_class = "success" if abs(data.ashrae_nmbe) <= 5 else ("warning" if abs(data.ashrae_nmbe) <= 10 else "danger")
+        cvrmse_class = "success" if data.ashrae_cvrmse <= 15 else ("warning" if data.ashrae_cvrmse <= 30 else "danger")
+        ashrae_status = "✓ Godkänd" if data.ashrae_passes else "✗ Ej godkänd"
+        ashrae_status_class = "success" if data.ashrae_passes else "danger"
+
+        # Surrogate quality indicator
+        surrogate_class = "success" if data.surrogate_test_r2 >= 0.90 else ("warning" if data.surrogate_test_r2 >= 0.80 else "danger")
+        overfit_warning = ""
+        if data.surrogate_is_overfit:
+            overfit_warning = '''
+            <div class="alert" style="background: var(--warning); color: #000; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem;">
+                ⚠️ Varning: Modellen kan vara överanpassad (train R² >> test R²)
+            </div>
+            '''
+
+        # Morris ranking visualization
+        morris_html = ""
+        if data.morris_ranking:
+            sorted_params = sorted(data.morris_ranking.items(), key=lambda x: x[1])
+            param_names_sv = {
+                "heat_recovery_eff": "Värmeåtervinning",
+                "infiltration_ach": "Luftläckage",
+                "window_u_value": "Fönster U-värde",
+                "wall_u_value": "Vägg U-värde",
+                "roof_u_value": "Tak U-värde",
+                "floor_u_value": "Golv U-värde",
+                "heating_setpoint": "Börvärde",
+            }
+            bars_html = ""
+            for i, (param, rank) in enumerate(sorted_params):
+                name = param_names_sv.get(param, param)
+                is_calibrated = data.calibrated_params and param in data.calibrated_params
+                bar_class = "primary" if is_calibrated else "secondary"
+                importance = 100 - (rank - 1) * 14  # Scale 1-7 to 100-15%
+                bars_html += f'''
+                    <div style="margin-bottom: 0.5rem;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                            <span>{name}</span>
+                            <span style="color: var(--{bar_class});">{'Kalibrerad' if is_calibrated else 'Fixerad'}</span>
+                        </div>
+                        <div style="background: var(--bg-secondary); border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div style="background: var(--{bar_class}); width: {importance}%; height: 100%;"></div>
+                        </div>
+                    </div>
+                '''
+
+            morris_html = f'''
+            <div class="stat-card" style="grid-column: span 2;">
+                <h4 style="margin-bottom: 1rem;">Parameterviktighet (Morris Screening)</h4>
+                {bars_html}
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">
+                    Endast de viktigaste parametrarna kalibreras. Övriga fixeras vid arkettypvärden.
+                </p>
+            </div>
+            '''
+
+        method_name = "Bayesian ABC-SMC" if "bayesian" in data.calibration_method.lower() else "Enkel"
+
+        # Data quality warning display
+        data_quality_html = ""
+        if data.calibration_data_warning or data.calibration_data_resolution == "annual":
+            # Confidence color
+            if data.calibration_confidence >= 0.8:
+                conf_class = "success"
+                conf_label = "Hög"
+            elif data.calibration_confidence >= 0.6:
+                conf_class = "success"
+                conf_label = "Medium"
+            elif data.calibration_confidence >= 0.4:
+                conf_class = "warning"
+                conf_label = "Låg"
+            else:
+                conf_class = "danger"
+                conf_label = "Mycket låg"
+
+            resolution_sv = {
+                "hourly": "Timdata (8760 punkter)",
+                "monthly": "Månadsdata (12 punkter)",
+                "annual": "Årsdata (1 punkt)",
+            }.get(data.calibration_data_resolution, "Okänd")
+
+            # Warning message in Swedish
+            warning_sv = ""
+            if data.calibration_data_resolution == "annual":
+                warning_sv = '''
+                <div class="alert" style="background: var(--warning); color: #000; padding: 0.75rem; border-radius: 4px; margin-top: 1rem;">
+                    <strong>⚠️ Begränsad dataupplösning:</strong> Kalibreringen baseras endast på årsenergianvändning.
+                    ASHRAE Guideline 14 rekommenderar månads- eller timdata för tillförlitlig kalibrering.
+                    <br>
+                    <span style="font-size: 0.85rem;">
+                        Med endast årsdata: (1) R² kan inte beräknas, (2) Månadsfel kan ta ut varandra,
+                        (3) Modellens noggrannhet är osäker. För produktion, begär månadsvis energistatistik.
+                    </span>
+                </div>
+                '''
+
+            data_quality_html = f'''
+            <div class="stat-card" style="margin-top: 1rem;">
+                <h4 style="margin-bottom: 0.5rem;">Datakvalitet</h4>
+                <div style="display: flex; gap: 2rem; align-items: center;">
+                    <div>
+                        <div class="value" style="font-size: 1.5rem; color: var(--{conf_class});">{data.calibration_confidence:.0%}</div>
+                        <div class="label">Konfidens ({conf_label})</div>
+                    </div>
+                    <div>
+                        <div style="font-weight: 600;">{resolution_sv}</div>
+                        <div style="font-size: 0.85rem; color: var(--text-muted);">Dataupplösning</div>
+                    </div>
+                </div>
+                {warning_sv}
+            </div>
+            '''
+
+        return f'''
+        <section>
+            <h2>📊 Kalibreringskvalitet</h2>
+            <p style="color: var(--text-muted); margin-bottom: 1rem;">
+                Baseline-modellen har kalibrerats mot deklarerad energianvändning med {method_name}-metod.
+            </p>
+
+            <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap: 1rem;">
+                <div class="stat-card">
+                    <div class="value">{data.calibrated_kwh_m2:.1f}</div>
+                    <div class="label">Kalibrerad (kWh/m²)</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">± {data.calibration_std:.1f}</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="value" style="color: var(--{nmbe_class});">{data.ashrae_nmbe:+.1f}%</div>
+                    <div class="label">NMBE</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">Mål: ±5%</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="value" style="color: var(--{cvrmse_class});">{data.ashrae_cvrmse:.1f}%</div>
+                    <div class="label">CV(RMSE)</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">Mål: &lt;15%</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="value" style="color: var(--{ashrae_status_class});">{ashrae_status}</div>
+                    <div class="label">ASHRAE Guideline 14</div>
+                </div>
+            </div>
+
+            {data_quality_html}
+
+            <div class="grid" style="grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-top: 1rem;">
+                <div class="stat-card">
+                    <div class="value" style="color: var(--{surrogate_class});">{data.surrogate_test_r2:.2f}</div>
+                    <div class="label">Surrogatmodell R² (test)</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">
+                        Training: {data.surrogate_r2:.2f}
+                    </div>
+                    {overfit_warning}
+                </div>
+
+                {morris_html}
+            </div>
+        </section>
+        '''
+
+    def _format_complexity_section(self, data: ReportData) -> str:
+        """Format building complexity assessment section."""
+        # Only show if there's a warning or notable complexity
+        if not data.building_complexity_warning and data.building_complexity_score <= 30:
+            return ''
+
+        # Determine complexity level and color
+        score = data.building_complexity_score
+        if score <= 30:
+            level = "Enkel"
+            level_class = "success"
+            icon = "✓"
+        elif score <= 60:
+            level = "Måttlig"
+            level_class = "warning"
+            icon = "⚡"
+        else:
+            level = "Komplex"
+            level_class = "danger"
+            icon = "⚠️"
+
+        zone_text = "Enzon" if data.single_zone_adequate else "Flerzon rekommenderas"
+        zone_class = "success" if data.single_zone_adequate else "warning"
+
+        warning_html = ""
+        if data.building_complexity_warning:
+            warning_html = f'''
+            <div class="alert" style="background: var(--{level_class}); color: {'#000' if level_class == 'warning' else '#fff'}; padding: 0.75rem; border-radius: 4px; margin-top: 1rem;">
+                <strong>{icon} {level} byggnadskomplexitet</strong><br>
+                <span style="font-size: 0.9rem;">{data.building_complexity_warning}</span>
+            </div>
+            '''
+
+        return f'''
+        <section>
+            <h2>🏗️ Modellkomplexitet</h2>
+            <p style="color: var(--text-muted); margin-bottom: 1rem;">
+                Bedömning av byggnadsgeometri för termisk zonindelning.
+            </p>
+
+            <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 1rem;">
+                <div class="stat-card">
+                    <div class="value" style="color: var(--{level_class});">{score:.0f}</div>
+                    <div class="label">Komplexitetspoäng (0-100)</div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">{level}</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="value" style="color: var(--{zone_class});">{zone_text}</div>
+                    <div class="label">Modelltyp</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="value">{100 - score:.0f}%</div>
+                    <div class="label">Modellförtroende</div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">
+                        {'Hög' if score <= 30 else ('Måttlig' if score <= 60 else 'Begränsad')} noggrannhet
+                    </div>
+                </div>
+            </div>
+
+            {warning_html}
+        </section>
+        '''
+
     def _format_ecm_table(self, data: ReportData) -> str:
-        """Format ECM results as HTML table."""
+        """Format ECM results as HTML table with multi-end-use energy tracking."""
         if not data.ecm_results:
             return '<p><em>Inga simuleringsresultat tillgängliga</em></p>'
 
         rows = ""
         has_led_note = False
+        has_dhw_note = False
 
-        for ecm in sorted(data.ecm_results, key=lambda x: x.savings_percent, reverse=True):
+        # Sort by total savings if available, else heating savings
+        def get_savings(ecm):
+            return ecm.total_savings_percent if ecm.total_savings_percent else ecm.savings_percent
+
+        for ecm in sorted(data.ecm_results, key=get_savings, reverse=True):
             ecm_id = ecm.id.lower()
             note = ""
 
-            if ecm.savings_percent > 0:
+            # Use total savings (all end-uses) if available, else heating-only
+            savings_pct = ecm.total_savings_percent if ecm.total_savings_percent else ecm.savings_percent
+            result_total = ecm.total_kwh_m2 if ecm.total_kwh_m2 else ecm.result_kwh_m2
+
+            # Build end-use breakdown tooltip
+            end_use_detail = ""
+            if ecm.savings_by_end_use:
+                details = []
+                if ecm.savings_by_end_use.get("heating", 0) > 0:
+                    details.append(f"värme: -{ecm.savings_by_end_use['heating']:.1f} kWh/m²")
+                if ecm.savings_by_end_use.get("dhw", 0) > 0:
+                    details.append(f"VV: -{ecm.savings_by_end_use['dhw']:.1f} kWh/m²")
+                if ecm.savings_by_end_use.get("property_el", 0) > 0:
+                    details.append(f"el: -{ecm.savings_by_end_use['property_el']:.1f} kWh/m²")
+                if details:
+                    end_use_detail = f' title="{", ".join(details)}"'
+
+            if savings_pct > 0:
                 savings_class = "savings-positive"
-                savings_text = f"-{ecm.savings_percent:.0f}%"
-                bar_width = min(ecm.savings_percent, 100)
-            elif ecm.savings_percent < -1:  # Heating increased
+                savings_text = f"-{savings_pct:.0f}%"
+                bar_width = min(savings_pct, 100)
+            elif savings_pct < -1:  # Heating increased
                 savings_class = "savings-neutral"
-                savings_text = f"+{abs(ecm.savings_percent):.0f}%"
+                savings_text = f"+{abs(savings_pct):.0f}%"
                 bar_width = 0
-                # Special note for LED lighting
+                # Special note for LED lighting (heating may increase but electricity decreases)
                 if 'led' in ecm_id or 'lighting' in ecm_id:
                     note = " *"
                     has_led_note = True
@@ -1133,10 +1583,16 @@ class HTMLReportGenerator:
                 savings_text = "0%"
                 bar_width = 0
 
+            # Check for DHW/property_el only savings (no heating savings)
+            if ecm.savings_by_end_use and ecm.savings_by_end_use.get("heating", 0) == 0:
+                if ecm.savings_by_end_use.get("dhw", 0) > 0 or ecm.savings_by_end_use.get("property_el", 0) > 0:
+                    note = " †"
+                    has_dhw_note = True
+
             rows += f'''
-            <tr>
+            <tr{end_use_detail}>
                 <td>{ecm.name}{note}</td>
-                <td>{ecm.result_kwh_m2:.1f} kWh/m²</td>
+                <td>{result_total:.1f} kWh/m²</td>
                 <td class="{savings_class}">{savings_text}</td>
                 <td>
                     <div class="chart-bar">
@@ -1157,6 +1613,26 @@ class HTMLReportGenerator:
             </p>
             '''
 
+        # DHW/property_el note
+        dhw_note = ""
+        if has_dhw_note:
+            dhw_note = '''
+            <p style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--gray-700); font-style: italic;">
+                † Denna åtgärd påverkar varmvatten eller fastighetsel, inte uppvärmning.
+            </p>
+            '''
+
+        # Build baseline breakdown text
+        baseline_text = f"Baseline: {data.baseline_heating_kwh_m2:.1f} kWh/m²/år (uppvärmning)"
+        if data.baseline_total_kwh_m2 > 0:
+            baseline_text = f"Baseline total: {data.baseline_total_kwh_m2:.1f} kWh/m²/år"
+            breakdown_parts = [f"uppvärmning {data.baseline_heating_kwh_m2:.1f}"]
+            if data.baseline_dhw_kwh_m2 > 0:
+                breakdown_parts.append(f"VV {data.baseline_dhw_kwh_m2:.1f}")
+            if data.baseline_property_el_kwh_m2 > 0:
+                breakdown_parts.append(f"fastighetsel {data.baseline_property_el_kwh_m2:.1f}")
+            baseline_text += f" ({', '.join(breakdown_parts)})"
+
         return f'''
         <table>
             <thead>
@@ -1172,9 +1648,10 @@ class HTMLReportGenerator:
             </tbody>
         </table>
         <p style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--gray-700);">
-            Baseline: {data.baseline_heating_kwh_m2:.1f} kWh/m²/år
+            {baseline_text}
         </p>
         {led_note}
+        {dhw_note}
         '''
 
     def _generate_recommendation(self, data: ReportData) -> str:
@@ -1225,6 +1702,10 @@ def generate_report(
     # Build ECM results
     ecm_results = []
     baseline = baseline_heating or summary.get('energy_performance_kwh_per_sqm', 100)
+    atemp_m2 = summary.get('total_heated_area_sqm', 0) or 1000  # Default 1000 m² if not specified
+
+    # Get energy price for payback calculation (default Stockholm district heating)
+    energy_price = get_energy_price(region="stockholm", heating_type="district_heating")
 
     for ecm_id, result in simulation_results.items():
         if result.success and result.parsed_results:
@@ -1242,6 +1723,18 @@ def generate_report(
             savings = baseline - result_kwh
             savings_pct = (savings / baseline) * 100 if baseline > 0 else 0
 
+            # Calculate cost using V2 database with regional multipliers
+            estimated_cost = get_ecm_cost_v2(
+                ecm_id=ecm_id,
+                atemp_m2=atemp_m2,
+                region="stockholm",
+                owner_type="brf",
+            )
+
+            # Calculate simple payback: cost / annual savings
+            annual_savings_sek = savings * atemp_m2 * energy_price
+            payback_years = estimated_cost / annual_savings_sek if annual_savings_sek > 0 else 999
+
             ecm_results.append(ECMResult(
                 id=ecm_id,
                 name=ecm_obj.name if ecm_obj else ecm_id,
@@ -1250,8 +1743,8 @@ def generate_report(
                 result_kwh_m2=result_kwh,
                 savings_kwh_m2=savings,
                 savings_percent=savings_pct,
-                estimated_cost_sek=0,  # TODO: Add cost calculation
-                simple_payback_years=0,  # TODO: Add payback calculation
+                estimated_cost_sek=estimated_cost,
+                simple_payback_years=payback_years,
             ))
 
     # Build existing measures list

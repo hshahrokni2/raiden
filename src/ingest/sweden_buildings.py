@@ -34,6 +34,29 @@ console = Console()
 DEFAULT_GEOJSON_PATH = Path(__file__).parent.parent.parent / "data" / "sweden_buildings.geojson"
 
 
+def _parse_pct(value: Any) -> float:
+    """Parse percentage value from GeoJSON (handles empty strings, None, floats)."""
+    if value is None or value == "" or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _parse_airflow(value: Any) -> Optional[float]:
+    """Parse airflow value from GeoJSON (handles Swedish decimal format)."""
+    if value is None or value == "" or value == "":
+        return None
+    try:
+        # Swedish format uses comma as decimal separator
+        if isinstance(value, str):
+            value = value.replace(",", ".")
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 @dataclass
 class SwedishBuilding:
     """Parsed Swedish building from GeoJSON."""
@@ -63,11 +86,33 @@ class SwedishBuilding:
     num_apartments: Optional[int] = None
     num_floors: Optional[int] = None
 
+    # Use-type breakdown (percentages of Atemp, 0-100)
+    # Critical for multi-zone modeling - different zones have different ventilation!
+    atemp_residential_pct: float = 100.0  # Bostad - residential
+    atemp_retail_pct: float = 0.0  # Butik - retail/shops
+    atemp_restaurant_pct: float = 0.0  # Restaurang - restaurant/kitchen
+    atemp_office_pct: float = 0.0  # Kontor - office
+    atemp_hotel_pct: float = 0.0  # Hotell - hotel
+    atemp_school_pct: float = 0.0  # Skolor - schools
+    atemp_healthcare_pct: float = 0.0  # Vård - healthcare
+    atemp_grocery_pct: float = 0.0  # Livsmedel - grocery store
+    atemp_theater_pct: float = 0.0  # Teater - theater/cinema
+    atemp_pool_pct: float = 0.0  # Bad - swimming pool
+    atemp_other_pct: float = 0.0  # Övrig - other
+    atemp_healthcare_day_pct: float = 0.0  # VårdDag - day care
+
+    # Ventilation details (from declaration)
+    has_ftx: bool = False  # FTX system present
+    has_f_only: bool = False  # F-only (exhaust) present
+    has_ft: bool = False  # FT (supply+exhaust, no HR) present
+    has_natural_vent: bool = False  # Självdrag - natural ventilation
+    design_airflow_l_s_m2: Optional[float] = None  # Projekterat ventilationsflöde
+
     # Energy declaration
     energy_class: str = ""  # A, B, C, D, E, F, G
     energy_performance_kwh_m2: Optional[float] = None
 
-    # Heating (kWh)
+    # Heating sources (kWh) - from UPPV fields
     district_heating_kwh: float = 0.0
     ground_source_hp_kwh: float = 0.0
     exhaust_air_hp_kwh: float = 0.0
@@ -78,6 +123,14 @@ class SwedishBuilding:
     gas_kwh: float = 0.0
     wood_kwh: float = 0.0
     pellets_kwh: float = 0.0
+    biofuel_kwh: float = 0.0
+
+    # Electricity (kWh)
+    property_electricity_kwh: float = 0.0  # Fastighetsel
+    hot_water_electricity_kwh: float = 0.0  # El för varmvatten
+
+    # Cooling (kWh)
+    district_cooling_kwh: float = 0.0
 
     # Ventilation
     ventilation_type: str = ""  # F, FT, FTX, Självdrag
@@ -87,6 +140,11 @@ class SwedishBuilding:
     has_solar_thermal: bool = False
     solar_pv_kwh: float = 0.0
     solar_thermal_kwh: float = 0.0
+    solar_production_kwh: float = 0.0  # Beräknad elproduktion
+
+    # Energy totals
+    total_energy_kwh: float = 0.0
+    primary_energy_kwh: float = 0.0
 
     # Ownership
     owner_type: str = ""  # Privatägd, Bostadsrätt, etc.
@@ -134,6 +192,108 @@ class SwedishBuilding:
             return "unknown"
 
         return max(sources, key=sources.get)
+
+    def is_mixed_use(self, threshold_pct: float = 5.0) -> bool:
+        """Check if building has significant non-residential use."""
+        non_residential = (
+            self.atemp_retail_pct + self.atemp_restaurant_pct +
+            self.atemp_office_pct + self.atemp_hotel_pct +
+            self.atemp_school_pct + self.atemp_healthcare_pct +
+            self.atemp_grocery_pct + self.atemp_theater_pct +
+            self.atemp_pool_pct + self.atemp_other_pct +
+            self.atemp_healthcare_day_pct
+        )
+        return non_residential >= threshold_pct
+
+    def get_zone_breakdown(self) -> Dict[str, float]:
+        """
+        Get zone breakdown for multi-zone modeling.
+
+        Returns dict of zone_type -> fraction (0.0-1.0).
+        Only includes zones with >0% area.
+        """
+        zones = {}
+
+        # Map percentage fields to zone types
+        zone_map = {
+            'residential': self.atemp_residential_pct,
+            'retail': self.atemp_retail_pct,
+            'restaurant': self.atemp_restaurant_pct,
+            'office': self.atemp_office_pct,
+            'hotel': self.atemp_hotel_pct,
+            'school': self.atemp_school_pct,
+            'healthcare': self.atemp_healthcare_pct,
+            'grocery': self.atemp_grocery_pct,
+            'theater': self.atemp_theater_pct,
+            'pool': self.atemp_pool_pct,
+            'other': self.atemp_other_pct,
+            'daycare': self.atemp_healthcare_day_pct,
+        }
+
+        for zone_type, pct in zone_map.items():
+            if pct > 0:
+                zones[zone_type] = pct / 100.0
+
+        # If no zones defined (all zeros), assume 100% residential
+        if not zones:
+            zones['residential'] = 1.0
+
+        return zones
+
+    def get_commercial_fraction(self) -> float:
+        """Get fraction of building that is commercial (non-residential)."""
+        return 1.0 - (self.atemp_residential_pct / 100.0)
+
+    def has_high_ventilation_zones(self) -> bool:
+        """Check if building has zones requiring high ventilation (restaurant, pool, grocery)."""
+        return (
+            self.atemp_restaurant_pct > 0 or
+            self.atemp_pool_pct > 0 or
+            self.atemp_grocery_pct > 0
+        )
+
+    def get_effective_ventilation_params(self) -> Dict[str, float]:
+        """
+        Calculate effective ventilation parameters for the whole building.
+
+        Returns weighted-average airflow and heat recovery based on zone mix.
+        Critical for calibration and energy modeling.
+        """
+        from .zone_configs import ZONE_CONFIGS
+
+        zones = self.get_zone_breakdown()
+
+        # Calculate weighted averages
+        total_airflow_weighted = 0.0
+        total_hr_weighted = 0.0
+        total_heat_loss_factor = 0.0  # For proper HR weighting
+
+        for zone_type, fraction in zones.items():
+            config = ZONE_CONFIGS.get(zone_type, ZONE_CONFIGS['residential'])
+            airflow = config['airflow_l_s_m2']
+            hr = config['heat_recovery_eff']
+
+            # Weight airflow by area fraction
+            total_airflow_weighted += airflow * fraction
+
+            # HR must be weighted by HEAT LOSS, not area
+            # Heat loss ∝ airflow × (1 - HR)
+            heat_loss = airflow * (1.0 - hr)
+            total_heat_loss_factor += heat_loss * fraction
+            total_hr_weighted += airflow * hr * fraction
+
+        # Effective HR = 1 - (weighted_heat_loss / weighted_airflow)
+        if total_airflow_weighted > 0:
+            effective_hr = 1.0 - (total_heat_loss_factor / total_airflow_weighted)
+        else:
+            effective_hr = 0.0
+
+        return {
+            'effective_airflow_l_s_m2': total_airflow_weighted,
+            'effective_heat_recovery': max(0.0, min(1.0, effective_hr)),
+            'heat_loss_factor': total_heat_loss_factor,
+            'zones': zones,
+        }
 
 
 def sweref99_to_wgs84(x: float, y: float) -> Tuple[float, float]:
@@ -287,21 +447,52 @@ class SwedenBuildingsLoader:
             num_apartments=props.get("EgenAntalBolgh"),
             num_floors=props.get("EgenAntalPlan"),
 
+            # Use-type breakdown (percentages)
+            # Note: These are stored as floats (0-100) or empty strings in GeoJSON
+            atemp_residential_pct=_parse_pct(props.get("EgenAtempBostad", 100.0)),
+            atemp_retail_pct=_parse_pct(props.get("EgenAtempButik", 0)),
+            atemp_restaurant_pct=_parse_pct(props.get("EgenAtempRestaurang", 0)),
+            atemp_office_pct=_parse_pct(props.get("EgenAtempKontor", 0)),
+            atemp_hotel_pct=_parse_pct(props.get("EgenAtempHotell", 0)),
+            atemp_school_pct=_parse_pct(props.get("EgenAtempSkolor", 0)),
+            atemp_healthcare_pct=_parse_pct(props.get("EgenAtempVard", 0)),
+            atemp_grocery_pct=_parse_pct(props.get("EgenAtempLivsmedel", 0)),
+            atemp_theater_pct=_parse_pct(props.get("EgenAtempTeater", 0)),
+            atemp_pool_pct=_parse_pct(props.get("EgenAtempBad", 0)),
+            atemp_other_pct=_parse_pct(props.get("EgenAtempOvrig", 0)),
+            atemp_healthcare_day_pct=_parse_pct(props.get("EgenAtempVardDag", 0)),
+
+            # Ventilation details
+            has_ftx=props.get("VentTypFTX") == "Ja",
+            has_f_only=props.get("VentTypF") == "Ja" or props.get("VentTypFmed") == "Ja",
+            has_ft=props.get("VentTypFT") == "Ja",
+            has_natural_vent=props.get("VentTypSjalvdrag") == "Ja",
+            design_airflow_l_s_m2=_parse_airflow(props.get("EgenProjVentFlode")),
+
             # Energy
             energy_class=props.get("EgiEnergiklass", ""),
             energy_performance_kwh_m2=props.get("EgiEnergiPrestanda"),
 
-            # Heating
-            district_heating_kwh=props.get("EgiFjarrvarme", 0.0) or 0.0,
-            ground_source_hp_kwh=props.get("EgiPumpMark", 0.0) or 0.0,
-            exhaust_air_hp_kwh=props.get("EgiPumpFranluft", 0.0) or 0.0,
-            air_water_hp_kwh=props.get("EgiPumpLuftVatten", 0.0) or 0.0,
-            air_air_hp_kwh=props.get("EgiPumpLuftLuft", 0.0) or 0.0,
-            electric_direct_kwh=props.get("EgiElDirekt", 0.0) or 0.0,
-            oil_kwh=props.get("EgiOlja", 0.0) or 0.0,
-            gas_kwh=props.get("EgiGas", 0.0) or 0.0,
-            wood_kwh=props.get("EgiVed", 0.0) or 0.0,
-            pellets_kwh=props.get("EgiFlis", 0.0) or 0.0,
+            # Heating - use UPPV fields (uppvärmning = heating)
+            # Falls back to non-UPPV if UPPV is 0
+            district_heating_kwh=float(props.get("EgiFjarrvarmeUPPV") or props.get("EgiFjarrvarme") or 0),
+            ground_source_hp_kwh=float(props.get("EgiPumpMarkUPPV") or props.get("EgiPumpMark") or 0),
+            exhaust_air_hp_kwh=float(props.get("EgiPumpFranluftUPPV") or props.get("EgiPumpFranluft") or 0),
+            air_water_hp_kwh=float(props.get("EgiPumpLuftVattenUPPV") or props.get("EgiPumpLuftVatten") or 0),
+            air_air_hp_kwh=float(props.get("EgiPumpLuftLuftUPPV") or props.get("EgiPumpLuftLuft") or 0),
+            electric_direct_kwh=float(props.get("EgiElDirektUPPV") or props.get("EgiElDirekt") or 0),
+            oil_kwh=float(props.get("EgiOljaUPPV") or props.get("EgiOlja") or 0),
+            gas_kwh=float(props.get("EgiGasUPPV") or props.get("EgiGas") or 0),
+            wood_kwh=float(props.get("EgiVedUPPV") or props.get("EgiVed") or 0),
+            pellets_kwh=float(props.get("EgiFlisUPPV") or props.get("EgiFlis") or 0),
+            biofuel_kwh=float(props.get("EgiOvrBiobransleUPPV") or props.get("EgiOvrBiobransle") or 0),
+
+            # Electricity
+            property_electricity_kwh=float(props.get("EgiFastighet") or 0),
+            hot_water_electricity_kwh=float(props.get("EgiElVV") or 0),
+
+            # Cooling
+            district_cooling_kwh=float(props.get("EgiFjarrkyla") or 0),
 
             # Ventilation
             ventilation_type=vent_type,
@@ -311,6 +502,11 @@ class SwedenBuildingsLoader:
             has_solar_thermal=props.get("EgiGruppSolvarme") == "Ja",
             solar_pv_kwh=float(props.get("EgiSolcell") or 0),
             solar_thermal_kwh=float(props.get("EgiSolvarme") or 0),
+            solar_production_kwh=float(props.get("EgiBerElProduktion") or 0),
+
+            # Energy totals
+            total_energy_kwh=float(props.get("EgiEnergianvandning") or 0),
+            primary_energy_kwh=float(props.get("EgiPrimarenergianvandning") or 0),
 
             # Ownership
             owner_type=props.get("42P_ByggnadsAgare", ""),
@@ -324,10 +520,62 @@ class SwedenBuildingsLoader:
         return self._buildings
 
     def find_by_address(self, address: str) -> List[SwedishBuilding]:
-        """Find buildings matching an address (partial match)."""
-        self._ensure_loaded()
-        address_lower = address.lower()
+        """
+        Find buildings matching an address with smart matching.
 
+        Priority:
+        1. Exact match (street + house number)
+        2. Partial match on street name
+
+        Handles cases like:
+        - "Rusthållarvägen 2" should match "Rusthållarvägen 2" not "Rusthållarvägen 25"
+        - "Aktergatan 11, Stockholm" should match "Aktergatan 11"
+        """
+        import re
+        self._ensure_loaded()
+
+        # Clean and parse the search address
+        # Remove city suffix: "Aktergatan 11, Stockholm" -> "Aktergatan 11"
+        address_clean = address.split(",")[0].strip()
+        address_lower = address_clean.lower()
+
+        # Extract street name and house number
+        # Pattern: "Street Name 123" or "Street Name 123A"
+        match = re.match(r'^(.+?)\s+(\d+\w*)$', address_clean, re.IGNORECASE)
+
+        if match:
+            search_street = match.group(1).lower().strip()
+            search_number = match.group(2).lower().strip()
+
+            # First try exact match: street + house number
+            exact_matches = []
+            partial_matches = []
+
+            for building in self._buildings:
+                b_match = re.match(r'^(.+?)\s+(\d+\w*)$', building.address, re.IGNORECASE)
+                if b_match:
+                    b_street = b_match.group(1).lower().strip()
+                    b_number = b_match.group(2).lower().strip()
+
+                    # Exact street + number match
+                    if b_street == search_street and b_number == search_number:
+                        exact_matches.append(building)
+                    # Same street, different number (for partial fallback)
+                    elif b_street == search_street:
+                        partial_matches.append(building)
+                    # Partial street match (e.g., "aktergatan" in "stora aktergatan")
+                    elif search_street in b_street or b_street in search_street:
+                        if b_number == search_number:
+                            exact_matches.append(building)
+                        else:
+                            partial_matches.append(building)
+
+            if exact_matches:
+                return exact_matches
+            if partial_matches:
+                return partial_matches
+
+        # Fallback: original partial matching logic
         matches = []
         for building in self._buildings:
             if address_lower in building.address.lower():

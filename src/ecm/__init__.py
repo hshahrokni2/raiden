@@ -35,6 +35,16 @@ from .catalog import (
 from .constraints import ConstraintEngine, BuildingContext
 from .combinations import CombinationGenerator
 from .idf_modifier import IDFModifier
+from .dependencies import (
+    ECMDependencyMatrix,
+    ECMRelation,
+    RelationType,
+    get_dependency_matrix,
+    validate_package,
+    get_package_synergy,
+    suggest_additions,
+    adjust_package_savings,
+)
 
 __all__ = [
     # ECM definitions
@@ -58,4 +68,13 @@ __all__ = [
     'CombinationGenerator',
     # IDF modifier
     'IDFModifier',
+    # Dependencies
+    'ECMDependencyMatrix',
+    'ECMRelation',
+    'RelationType',
+    'get_dependency_matrix',
+    'validate_package',
+    'get_package_synergy',
+    'suggest_additions',
+    'adjust_package_savings',
 ]

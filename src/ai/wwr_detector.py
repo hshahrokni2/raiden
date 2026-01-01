@@ -18,8 +18,22 @@ from PIL import Image
 from rich.console import Console
 
 from ..core.models import WindowToWallRatio
+from .image_quality import ImageQualityAssessor, ImageQualityResult
 
 console = Console()
+
+
+@dataclass
+class WindowGeometry:
+    """Geometric properties of a detected window."""
+    x: int
+    y: int
+    width: int
+    height: int
+    aspect_ratio: float
+    rectangularity: float
+    area: int
+    center_y_normalized: float  # 0-1, position in image
 
 
 @dataclass
@@ -63,6 +77,18 @@ class WWRDetector:
         self._model = None
         self._sam_predictor = None
         self._initialized = False
+        self._quality_assessor = ImageQualityAssessor()
+
+        # Tuned prompts for different detection scenarios
+        self.window_prompts = [
+            "window",  # Primary prompt
+            "glass window pane",  # More specific
+            "rectangular window",  # Shape-focused
+        ]
+        self.facade_prompts = [
+            "building facade",  # Primary
+            "apartment building wall",  # More specific for Swedish buildings
+        ]
 
     def _lazy_init(self) -> None:
         """Lazily initialize the model on first use."""
@@ -83,6 +109,207 @@ class WWRDetector:
             pass  # No model needed
 
         self._initialized = True
+
+    def assess_image_quality(
+        self,
+        image: Image.Image | np.ndarray | str | Path,
+    ) -> ImageQualityResult:
+        """
+        Assess image quality before processing.
+
+        Returns:
+            ImageQualityResult with usability flag and scores
+        """
+        return self._quality_assessor.assess(image)
+
+    def apply_geometric_filter(
+        self,
+        detections: list[DetectionResult],
+        image_height: int,
+        image_width: int,
+        min_aspect: float = 0.3,
+        max_aspect: float = 3.0,
+        min_rectangularity: float = 0.5,
+        min_area_ratio: float = 0.001,  # 0.1% of image
+        max_area_ratio: float = 0.15,   # 15% of image
+        remove_outliers: bool = True,
+    ) -> list[DetectionResult]:
+        """
+        Apply geometric constraints to filter false positive window detections.
+
+        Windows have consistent geometric properties:
+        - Rectangular shape (rectangularity > 0.5)
+        - Aspect ratio 0.3-3.0 (typically 0.5-2.0)
+        - Similar sizes within a facade (remove outliers)
+        - Located in building region (not at very top/bottom)
+
+        Args:
+            detections: Raw detection results
+            image_height: Image height in pixels
+            image_width: Image width in pixels
+            min_aspect: Minimum aspect ratio (width/height)
+            max_aspect: Maximum aspect ratio
+            min_rectangularity: Minimum rectangularity score (0-1)
+            min_area_ratio: Minimum window area as fraction of image
+            max_area_ratio: Maximum window area as fraction of image
+            remove_outliers: Remove windows with sizes that are outliers
+
+        Returns:
+            Filtered detection results
+        """
+        if not detections:
+            return []
+
+        image_area = image_height * image_width
+        min_area = image_area * min_area_ratio
+        max_area = image_area * max_area_ratio
+
+        # Extract geometry from each detection
+        geometries = []
+        valid_indices = []
+
+        for i, det in enumerate(detections):
+            if det.bbox is None:
+                continue
+
+            x1, y1, x2, y2 = det.bbox
+            width = x2 - x1
+            height = y2 - y1
+
+            if width <= 0 or height <= 0:
+                continue
+
+            aspect = width / height
+            area = width * height
+            center_y = (y1 + y2) / 2 / image_height
+
+            # Calculate rectangularity from mask
+            mask_area = det.mask.sum()
+            rect_area = width * height
+            rectangularity = mask_area / rect_area if rect_area > 0 else 0
+
+            geom = WindowGeometry(
+                x=x1, y=y1,
+                width=width, height=height,
+                aspect_ratio=aspect,
+                rectangularity=rectangularity,
+                area=area,
+                center_y_normalized=center_y,
+            )
+            geometries.append(geom)
+            valid_indices.append(i)
+
+        if not geometries:
+            return []
+
+        # Apply geometric filters
+        filtered_indices = []
+        for idx, geom in zip(valid_indices, geometries):
+            # Aspect ratio check
+            if geom.aspect_ratio < min_aspect or geom.aspect_ratio > max_aspect:
+                continue
+
+            # Rectangularity check
+            if geom.rectangularity < min_rectangularity:
+                continue
+
+            # Area check
+            if geom.area < min_area or geom.area > max_area:
+                continue
+
+            # Position check - windows usually in middle of facade
+            if geom.center_y_normalized < 0.05 or geom.center_y_normalized > 0.95:
+                continue
+
+            filtered_indices.append(idx)
+
+        if not filtered_indices:
+            return []
+
+        # Remove size outliers if requested
+        if remove_outliers and len(filtered_indices) > 3:
+            areas = [geometries[valid_indices.index(i)].area for i in filtered_indices]
+            median_area = np.median(areas)
+            std_area = np.std(areas)
+
+            # Keep windows within 2 standard deviations of median
+            final_indices = []
+            for idx in filtered_indices:
+                geom = geometries[valid_indices.index(idx)]
+                if abs(geom.area - median_area) <= 2 * std_area:
+                    final_indices.append(idx)
+
+            filtered_indices = final_indices if final_indices else filtered_indices
+
+        # Return filtered detections with boosted confidence
+        filtered_results = []
+        for idx in filtered_indices:
+            det = detections[idx]
+            # Boost confidence for geometrically valid windows
+            boosted_conf = min(1.0, det.confidence * 1.15)
+            filtered_results.append(DetectionResult(
+                mask=det.mask,
+                confidence=boosted_conf,
+                bbox=det.bbox,
+            ))
+
+        return filtered_results
+
+    def detect_window_grid_pattern(
+        self,
+        detections: list[DetectionResult],
+        image_width: int,
+        tolerance: float = 0.15,
+    ) -> float:
+        """
+        Detect if windows form a regular grid pattern (common in buildings).
+
+        Grid detection increases confidence as real windows are often evenly spaced.
+
+        Args:
+            detections: Window detections
+            image_width: Image width
+            tolerance: Spacing tolerance (fraction of average spacing)
+
+        Returns:
+            Grid score (0-1), higher = more regular pattern
+        """
+        if len(detections) < 4:
+            return 0.5  # Not enough windows to detect pattern
+
+        # Extract window center X positions
+        centers_x = []
+        for det in detections:
+            if det.bbox:
+                x1, y1, x2, y2 = det.bbox
+                centers_x.append((x1 + x2) / 2)
+
+        if len(centers_x) < 4:
+            return 0.5
+
+        # Sort by X position
+        centers_x = sorted(centers_x)
+
+        # Calculate spacings
+        spacings = [centers_x[i+1] - centers_x[i] for i in range(len(centers_x)-1)]
+
+        if not spacings:
+            return 0.5
+
+        # Check if spacings are regular
+        mean_spacing = np.mean(spacings)
+        std_spacing = np.std(spacings)
+
+        if mean_spacing <= 0:
+            return 0.5
+
+        # Coefficient of variation (lower = more regular)
+        cv = std_spacing / mean_spacing
+
+        # Convert to score (0-1)
+        grid_score = max(0, 1 - cv * 2)
+
+        return float(grid_score)
 
     def _init_opencv(self) -> None:
         """Initialize OpenCV-based detection (lightweight, no GPU needed)."""
@@ -191,6 +418,118 @@ class WWRDetector:
         cropped = img_array[top:bottom, left:right]
 
         return cropped, bbox
+
+    def detect_facade_with_sam(
+        self,
+        image: Image.Image | np.ndarray | str | Path,
+        prompt: str = "building facade",
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """
+        Detect building facade using SAM with text prompt.
+
+        Uses LangSAM to segment the building facade from street-level images,
+        providing more accurate isolation than simple CV-based cropping.
+
+        Args:
+            image: Input street-level image
+            prompt: Text prompt for building detection
+
+        Returns:
+            (cropped_image, mask, confidence)
+        """
+        self._lazy_init()
+
+        # Load image
+        if isinstance(image, (str, Path)):
+            image = Image.open(image).convert("RGB")
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+
+        img_array = np.array(image)
+        h, w = img_array.shape[:2]
+
+        if self.backend != "lang_sam" or self._model is None:
+            # Fallback to CV-based detection
+            cropped, bbox = self.detect_facade_region(image)
+            mask = np.ones((cropped.shape[0], cropped.shape[1]), dtype=np.uint8) * 255
+            return cropped, mask, 0.5
+
+        try:
+            # Use LangSAM to detect building facade
+            prediction_results = self._model.predict(
+                images_pil=[image],
+                texts_prompt=[prompt],
+                box_threshold=0.2,
+                text_threshold=0.2,
+            )
+
+            if not prediction_results or len(prediction_results) == 0:
+                # Fallback
+                cropped, bbox = self.detect_facade_region(image)
+                mask = np.ones((cropped.shape[0], cropped.shape[1]), dtype=np.uint8) * 255
+                return cropped, mask, 0.3
+
+            result = prediction_results[0]
+            masks = result.get("masks", np.array([]))
+            scores = result.get("scores", np.array([]))
+            boxes = result.get("boxes", np.array([]))
+
+            if len(masks) == 0:
+                cropped, bbox = self.detect_facade_region(image)
+                mask = np.ones((cropped.shape[0], cropped.shape[1]), dtype=np.uint8) * 255
+                return cropped, mask, 0.3
+
+            # Find largest building mask (by area)
+            best_idx = 0
+            best_area = 0
+            for i, m in enumerate(masks):
+                mask_array = m.cpu().numpy() if hasattr(m, 'cpu') else m
+                if mask_array.ndim == 3:
+                    mask_array = mask_array[0]
+                area = mask_array.sum()
+                if area > best_area:
+                    best_area = area
+                    best_idx = i
+
+            # Get the best mask
+            best_mask = masks[best_idx]
+            if hasattr(best_mask, 'cpu'):
+                best_mask = best_mask.cpu().numpy()
+            if best_mask.ndim == 3:
+                best_mask = best_mask[0]
+
+            confidence = float(scores[best_idx]) if len(scores) > best_idx else 0.5
+
+            # Get bounding box of mask
+            rows = np.any(best_mask, axis=1)
+            cols = np.any(best_mask, axis=0)
+            if not np.any(rows) or not np.any(cols):
+                cropped, bbox = self.detect_facade_region(image)
+                mask = np.ones((cropped.shape[0], cropped.shape[1]), dtype=np.uint8) * 255
+                return cropped, mask, 0.3
+
+            y_min, y_max = np.where(rows)[0][[0, -1]]
+            x_min, x_max = np.where(cols)[0][[0, -1]]
+
+            # Add small padding
+            pad = 10
+            y_min = max(0, y_min - pad)
+            y_max = min(h, y_max + pad)
+            x_min = max(0, x_min - pad)
+            x_max = min(w, x_max + pad)
+
+            # Crop image and mask
+            cropped = img_array[y_min:y_max, x_min:x_max]
+            cropped_mask = best_mask[y_min:y_max, x_min:x_max].astype(np.uint8) * 255
+
+            console.print(f"[dim]SAM facade: {cropped.shape[1]}x{cropped.shape[0]}, conf={confidence:.1%}[/dim]")
+            return cropped, cropped_mask, confidence
+
+        except Exception as e:
+            console.print(f"[yellow]SAM facade detection failed: {e}[/yellow]")
+            cropped, bbox = self.detect_facade_region(image)
+            mask = np.ones((cropped.shape[0], cropped.shape[1]), dtype=np.uint8) * 255
+            return cropped, mask, 0.3
 
     def _init_lang_sam(self) -> None:
         """Initialize LangSAM backend."""
@@ -471,31 +810,80 @@ class WWRDetector:
         text_prompt: str,
         confidence_threshold: float,
     ) -> list[DetectionResult]:
-        """Detection using LangSAM."""
+        """Detection using LangSAM 0.2.1+ API."""
         try:
-            masks, boxes, phrases, logits = self._model.predict(image, text_prompt)
+            # LangSAM 0.2.1 API: takes lists, returns list of dicts
+            # predict(images_pil: list[Image], texts_prompt: list[str], ...)
+            # Returns: [{"boxes": np.ndarray, "scores": np.ndarray, "masks": np.ndarray, "mask_scores": np.ndarray}]
 
-            results = []
-            for i, (mask, box, logit) in enumerate(zip(masks, boxes, logits)):
-                conf = float(logit)
+            prediction_results = self._model.predict(
+                images_pil=[image],
+                texts_prompt=[text_prompt],
+                box_threshold=confidence_threshold,
+                text_threshold=0.25,
+            )
+
+            if not prediction_results or len(prediction_results) == 0:
+                console.print("[dim]LangSAM: No detections[/dim]")
+                return []
+
+            # Get first image result
+            result = prediction_results[0]
+
+            boxes = result.get("boxes", np.array([]))
+            scores = result.get("scores", np.array([]))
+            masks = result.get("masks", np.array([]))
+
+            if len(boxes) == 0:
+                console.print("[dim]LangSAM: No objects found[/dim]")
+                return []
+
+            detection_results = []
+            for i in range(len(boxes)):
+                conf = float(scores[i]) if i < len(scores) else 0.5
+
                 if conf >= confidence_threshold:
-                    # Convert mask to numpy
-                    mask_np = mask.cpu().numpy() if hasattr(mask, "cpu") else np.array(mask)
+                    # Get mask for this detection
+                    if i < len(masks):
+                        mask = masks[i]
+                        # Handle different mask formats
+                        if hasattr(mask, 'cpu'):
+                            mask_np = mask.cpu().numpy()
+                        else:
+                            mask_np = np.array(mask)
 
-                    # Convert box to tuple
-                    box_tuple = tuple(int(x) for x in box.tolist()) if hasattr(box, "tolist") else None
+                        # Squeeze extra dimensions
+                        while mask_np.ndim > 2:
+                            mask_np = mask_np.squeeze()
+                        if mask_np.ndim > 2:
+                            mask_np = mask_np[0]
+                    else:
+                        # No mask, create from box
+                        box = boxes[i]
+                        h, w = image.size[1], image.size[0]
+                        mask_np = np.zeros((h, w), dtype=bool)
+                        x1, y1, x2, y2 = [int(v) for v in box[:4]]
+                        mask_np[y1:y2, x1:x2] = True
 
-                    results.append(DetectionResult(
+                    # Get box
+                    box = boxes[i]
+                    if hasattr(box, 'tolist'):
+                        box_tuple = tuple(int(x) for x in box.tolist()[:4])
+                    else:
+                        box_tuple = tuple(int(x) for x in box[:4])
+
+                    detection_results.append(DetectionResult(
                         mask=mask_np,
                         confidence=conf,
                         bbox=box_tuple,
                     ))
 
-            return results
+            console.print(f"[green]LangSAM: Found {len(detection_results)} windows[/green]")
+            return detection_results
 
         except Exception as e:
-            console.print(f"[red]LangSAM detection failed: {e}[/red]")
-            return []
+            console.print(f"[yellow]LangSAM failed ({type(e).__name__}: {e}), using OpenCV fallback[/yellow]")
+            return self._detect_opencv(image, confidence_threshold)
 
     def _detect_grounded_sam(
         self,
@@ -670,14 +1058,25 @@ class WWRDetector:
         image: Image.Image | np.ndarray | str | Path,
         wall_mask: np.ndarray | None = None,
         crop_facade: bool = True,
+        use_sam_crop: bool = False,
+        apply_quality_filter: bool = True,
+        apply_geometry_filter: bool = True,
     ) -> tuple[float, float]:
         """
         Calculate Window-to-Wall Ratio for a facade image.
+
+        Enhanced version with:
+        - Image quality assessment
+        - Geometric post-processing
+        - Grid pattern detection for confidence boost
 
         Args:
             image: Facade image
             wall_mask: Optional mask of wall area (if None, uses full image)
             crop_facade: If True, crop out sky/ground for street-level images
+            use_sam_crop: If True, use SAM to segment building facade (higher quality but slower)
+            apply_quality_filter: If True, assess image quality first
+            apply_geometry_filter: If True, filter detections by geometric properties
 
         Returns:
             (wwr, confidence) tuple
@@ -689,15 +1088,36 @@ class WWRDetector:
             image = Image.fromarray(image)
 
         img_array = np.array(image)
+        facade_confidence_boost = 0.0
+        quality_penalty = 0.0
+
+        # Quality assessment (optional)
+        if apply_quality_filter:
+            quality = self.assess_image_quality(image)
+            if not quality.is_usable:
+                # Return low confidence for unusable images
+                return 0.0, 0.1
+            # Apply quality-based confidence adjustment
+            quality_penalty = max(0, (0.6 - quality.overall_score) * 0.3)
 
         # Optionally crop to facade region (removes sky/ground)
         if crop_facade and wall_mask is None:
             try:
-                cropped, bbox = self.detect_facade_region(image)
-                # Use cropped image for detection
-                detection_image = Image.fromarray(cropped)
-                facade_area = cropped.shape[0] * cropped.shape[1]
-            except Exception:
+                if use_sam_crop and self.backend == "lang_sam":
+                    # Use SAM for more accurate building segmentation
+                    cropped, facade_mask, facade_conf = self.detect_facade_with_sam(image)
+                    detection_image = Image.fromarray(cropped)
+                    # Use mask to calculate actual facade area (not just bounding box)
+                    facade_area = facade_mask.sum() / 255 if facade_mask.max() > 0 else cropped.shape[0] * cropped.shape[1]
+                    # Boost confidence if SAM segmentation was good
+                    facade_confidence_boost = facade_conf * 0.2
+                else:
+                    # Use simple CV-based cropping
+                    cropped, bbox = self.detect_facade_region(image)
+                    detection_image = Image.fromarray(cropped)
+                    facade_area = cropped.shape[0] * cropped.shape[1]
+            except Exception as e:
+                console.print(f"[dim]Facade crop failed: {e}[/dim]")
                 detection_image = image
                 facade_area = img_array.shape[0] * img_array.shape[1]
         else:
@@ -710,8 +1130,26 @@ class WWRDetector:
         if not window_results:
             return 0.0, 0.0
 
-        # Calculate total window area
+        # Apply geometric filtering (optional)
         det_array = np.array(detection_image)
+        det_h, det_w = det_array.shape[:2]
+
+        if apply_geometry_filter:
+            window_results = self.apply_geometric_filter(
+                window_results,
+                image_height=det_h,
+                image_width=det_w,
+            )
+
+            if not window_results:
+                return 0.0, 0.15  # Low confidence if all windows filtered
+
+            # Check for grid pattern (boosts confidence)
+            grid_score = self.detect_window_grid_pattern(window_results, det_w)
+            if grid_score > 0.7:
+                facade_confidence_boost += 0.1
+
+        # Calculate total window area
         combined_mask = np.zeros(det_array.shape[:2], dtype=bool)
 
         confidences = []
@@ -740,7 +1178,12 @@ class WWRDetector:
         wwr = window_area / wall_area if wall_area > 0 else 0.0
         avg_confidence = np.mean(confidences) if confidences else 0.0
 
-        return float(wwr), float(avg_confidence)
+        # Combine confidence adjustments
+        final_confidence = min(1.0, max(0.0,
+            avg_confidence + facade_confidence_boost - quality_penalty
+        ))
+
+        return float(wwr), float(final_confidence)
 
     def analyze_facade(
         self,

@@ -16,6 +16,9 @@ from .building_geometry import (
     RoofGeometry,
     WallSegment,
     calculate_building_geometry,
+    # Complexity detection
+    BuildingComplexity,
+    assess_building_complexity,
 )
 from .pv_potential import PVPotentialCalculator
 from .thermal_mass import ThermalMassCalculator
@@ -27,6 +30,9 @@ __all__ = [
     'RoofGeometry',
     'WallSegment',
     'calculate_building_geometry',
+    # Complexity detection
+    'BuildingComplexity',
+    'assess_building_complexity',
     'PVPotentialCalculator',
     'ThermalMassCalculator',
 ]

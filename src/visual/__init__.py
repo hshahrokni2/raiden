@@ -158,9 +158,21 @@ def quick_visual_scan(
     address: str = None,
     lat: float = None,
     lon: float = None,
+    brf_addresses: list = None,  # NEW: addresses from energy declaration
+    city: str = None,            # NEW: city for address lookup
 ) -> dict:
     """
     Quick visual scan of a building - returns essential metrics only.
+
+    NEW in v2.0: Uses OSM footprints by default (much more accurate).
+    Satellite extraction only as fallback for new construction.
+
+    Args:
+        address: Single address to geocode
+        lat, lon: Coordinates (optional if address provided)
+        brf_addresses: List of street addresses from energy declaration
+                       Used to correctly slice shared building complexes
+        city: City name (improves address resolution)
 
     Returns dict with:
     - height_m: Building height in meters
@@ -168,12 +180,22 @@ def quick_visual_scan(
     - material: Facade material
     - wwr: Average window-to-wall ratio
     - footprint_area_m2: Building footprint area
+    - footprint_source: 'osm', 'microsoft', or 'satellite'
     - confidence: Overall confidence score
 
     Example:
+        # Simple case
         info = quick_visual_scan(address="Kungsgatan 1, Stockholm")
-        print(f"{info['floors']} floors, {info['material']}, WWR={info['wwr']:.0%}")
+        
+        # Multi-building BRF with addresses from energy declaration
+        info = quick_visual_scan(
+            lat=59.37, lon=17.98,
+            brf_addresses=["Filmgatan 1", "Filmgatan 3", "Filmgatan 5"],
+            city="Solna"
+        )
     """
+    from ..geo.footprint_resolver import FootprintResolver
+    
     result = {}
 
     # Get coordinates
@@ -190,29 +212,85 @@ def quick_visual_scan(
     if not (lat and lon):
         return {"error": "Could not geocode address or no coordinates provided"}
 
-    # Visual analysis
+    # =========================================================================
+    # STEP 1: Resolve footprint from OSM (NEW - much more accurate!)
+    # =========================================================================
+    try:
+        resolver = FootprintResolver()
+        
+        if brf_addresses:
+            # Use address-based slicing for multi-building BRFs
+            footprints = resolver.resolve_with_address_slicing(
+                lat, lon, 
+                brf_addresses=brf_addresses,
+                search_radius_m=100
+            )
+        else:
+            footprints = resolver.resolve(lat, lon)
+        
+        if footprints and footprints[0].geometry:
+            primary = footprints[0]
+            result["footprint_geojson"] = primary.geometry
+            result["footprint_source"] = primary.source
+            result["footprint_osm_id"] = primary.osm_id
+            result["footprint_address"] = primary.address
+            
+            # Calculate area from polygon
+            if primary.geometry:
+                result["footprint_area_m2"] = _calculate_polygon_area(primary.geometry)
+            
+            # Use OSM height/floors if available
+            if primary.height_m:
+                result["height_m"] = primary.height_m
+            if primary.floors:
+                result["floors"] = primary.floors
+            
+            result["footprint_confidence"] = primary.confidence
+            
+            # Multi-building info
+            if len(footprints) > 1:
+                result["is_multi_building"] = True
+                result["buildings_count"] = len(footprints)
+                result["all_footprints"] = [fp.to_dict() for fp in footprints]
+    except Exception as e:
+        result["footprint_resolver_error"] = str(e)
+
+    # =========================================================================
+    # STEP 2: Visual analysis from Street View (Raiden's core strength)
+    # =========================================================================
     try:
         analyzer = VisualAnalyzer()
         visual = analyzer.analyze_building(lat, lon)
-        result["height_m"] = visual.height_m
-        result["floors"] = visual.floor_count
         result["material"] = visual.facade_material
         result["wwr"] = visual.wwr_average
         result["building_form"] = visual.building_form
         result["estimated_era"] = visual.estimated_era
+        
+        # Use visual floors/height if not from OSM
+        if not result.get("floors"):
+            result["floors"] = visual.floor_count
+        if not result.get("height_m"):
+            result["height_m"] = visual.height_m
+            
+        result["height_confidence"] = visual.height_confidence
         result["confidence"] = visual.height_confidence
     except Exception as e:
         result["visual_error"] = str(e)
 
-    # Footprint
-    try:
-        extractor = FootprintExtractor()
-        footprint = extractor.extract_from_coordinates(lat, lon)
-        if footprint:
-            result["footprint_area_m2"] = footprint.area_m2
-            result["footprint_geojson"] = footprint.geojson
-    except Exception as e:
-        result["footprint_error"] = str(e)
+    # =========================================================================
+    # STEP 3: Satellite extraction (ONLY if no OSM footprint found)
+    # =========================================================================
+    if not result.get("footprint_geojson"):
+        try:
+            extractor = FootprintExtractor()
+            footprint = extractor.extract_from_coordinates(lat, lon)
+            if footprint:
+                result["footprint_area_m2"] = footprint.area_m2
+                result["footprint_geojson"] = footprint.geojson
+                result["footprint_source"] = "satellite"
+                result["footprint_confidence"] = 0.5  # Lower confidence
+        except Exception as e:
+            result["satellite_error"] = str(e)
 
     result["lat"] = lat
     result["lon"] = lon
@@ -220,21 +298,53 @@ def quick_visual_scan(
     return result
 
 
+def _calculate_polygon_area(geojson: dict) -> float:
+    """Calculate area of a GeoJSON polygon in square meters."""
+    try:
+        coords = geojson.get("coordinates", [[]])[0]
+        if len(coords) < 3:
+            return 0.0
+        
+        # Shoelace formula with lat/lon to meters conversion
+        # Approximate conversion at Swedish latitudes (~59°N)
+        lat_to_m = 111320  # meters per degree latitude
+        lon_to_m = 111320 * 0.515  # cos(59°) ≈ 0.515
+        
+        n = len(coords)
+        area = 0.0
+        for i in range(n):
+            j = (i + 1) % n
+            # coords are [lon, lat]
+            x1 = coords[i][0] * lon_to_m
+            y1 = coords[i][1] * lat_to_m
+            x2 = coords[j][0] * lon_to_m
+            y2 = coords[j][1] * lat_to_m
+            area += x1 * y2
+            area -= x2 * y1
+        
+        return abs(area) / 2.0
+    except Exception:
+        return 0.0
+
+
 def get_building_geometry(
     address: str = None,
     lat: float = None,
     lon: float = None,
     addresses: list = None,  # For multi-building properties
+    city: str = None,        # City for better address resolution
 ) -> dict:
     """
-    Get complete building geometry from visual sources.
+    Get complete building geometry from OSM + visual sources.
 
-    For multi-building properties, provide list of addresses to
-    extract all building footprints using SAM point prompts.
+    NEW in v2.0: Uses OSM footprints by default (accurate, surveyed data).
+    For multi-building properties, provide list of addresses from energy
+    declaration to correctly slice shared complexes.
 
     Returns dict with:
     - footprint_geojson: GeoJSON polygon
     - footprint_area_m2: Area in square meters
+    - footprint_source: 'osm', 'microsoft', or 'satellite'
     - height_m: Building height
     - floors: Floor count
     - all_footprints: List if multi-building property
@@ -243,12 +353,16 @@ def get_building_geometry(
         # Single building
         geom = get_building_geometry(address="Storgatan 5, Malmö")
 
-        # Multi-building property
+        # Multi-building BRF (addresses from energy declaration)
         geom = get_building_geometry(
-            addresses=["Sjöstaden 2A", "Sjöstaden 2B", "Sjöstaden 4"],
+            lat=59.37, lon=17.98,
+            addresses=["Filmgatan 1", "Filmgatan 3", "Filmgatan 5"],
+            city="Solna"
         )
         print(f"Found {len(geom['all_footprints'])} buildings")
     """
+    from ..geo.footprint_resolver import FootprintResolver
+    
     result = {}
 
     # Geocode if needed
@@ -265,47 +379,113 @@ def get_building_geometry(
     if not (lat and lon) and not addresses:
         return {"error": "Could not geocode or no coordinates/addresses provided"}
 
-    # Footprint extraction
-    extractor = FootprintExtractor()
+    # =========================================================================
+    # STEP 1: Resolve footprints from OSM (preferred)
+    # =========================================================================
+    resolver = FootprintResolver()
+    osm_footprints = []
+    
+    try:
+        if addresses and len(addresses) > 0:
+            # Multi-building: use address-based slicing
+            if lat and lon:
+                osm_footprints = resolver.resolve_with_address_slicing(
+                    lat, lon,
+                    brf_addresses=addresses,
+                    search_radius_m=100
+                )
+            else:
+                # No coordinates - resolve by addresses directly
+                osm_footprints = resolver.resolve_by_addresses(
+                    addresses=addresses,
+                    city=city or "Stockholm"
+                )
+        elif lat and lon:
+            # Single building
+            osm_footprints = resolver.resolve(lat, lon)
+    except Exception as e:
+        result["osm_error"] = str(e)
+    
+    # Process OSM results
+    if osm_footprints:
+        result["all_footprints"] = []
+        total_area = 0.0
+        
+        for fp in osm_footprints:
+            if fp.geometry:
+                area = _calculate_polygon_area(fp.geometry)
+                total_area += area
+                result["all_footprints"].append({
+                    "geojson": fp.geometry,
+                    "area_m2": area,
+                    "address": fp.address,
+                    "osm_id": fp.osm_id,
+                    "height_m": fp.height_m,
+                    "floors": fp.floors,
+                    "source": fp.source,
+                    "confidence": fp.confidence,
+                })
+        
+        result["num_buildings"] = len(result["all_footprints"])
+        result["total_area_m2"] = total_area
+        result["footprint_source"] = "osm"
+        
+        # Use primary (first/largest) for main footprint
+        if result["all_footprints"]:
+            primary = max(result["all_footprints"], key=lambda f: f.get("area_m2", 0))
+            result["footprint_geojson"] = primary["geojson"]
+            result["footprint_area_m2"] = primary["area_m2"]
+            result["confidence"] = primary["confidence"]
+            
+            # Use OSM height/floors if available
+            if primary.get("height_m"):
+                result["height_m"] = primary["height_m"]
+            if primary.get("floors"):
+                result["floors"] = primary["floors"]
 
-    if addresses and len(addresses) > 1:
-        # Multi-building extraction
-        multi_result = extractor.extract_all_buildings(
-            lat=lat, lon=lon,
-            addresses=addresses,
-        )
-        if multi_result:
-            result["all_footprints"] = [
-                {
-                    "geojson": fp.geojson,
-                    "area_m2": fp.area_m2,
-                    "center_lat": fp.center_lat,
-                    "center_lon": fp.center_lon,
-                }
-                for fp in multi_result.footprints
-            ]
-            result["total_area_m2"] = multi_result.total_area_m2
-            result["num_buildings"] = multi_result.num_buildings
+    # =========================================================================
+    # STEP 2: Satellite fallback (only if no OSM data)
+    # =========================================================================
+    if not result.get("footprint_geojson") and lat and lon:
+        try:
+            extractor = FootprintExtractor()
+            
+            if addresses and len(addresses) > 1:
+                multi_result = extractor.extract_all_buildings(
+                    lat=lat, lon=lon,
+                    addresses=addresses,
+                )
+                if multi_result:
+                    result["all_footprints"] = [
+                        {
+                            "geojson": fp.geojson,
+                            "area_m2": fp.area_m2,
+                            "source": "satellite",
+                        }
+                        for fp in multi_result.footprints
+                    ]
+                    result["total_area_m2"] = multi_result.total_area_m2
+                    result["num_buildings"] = multi_result.num_buildings
+                    result["footprint_source"] = "satellite"
 
-            # Use largest for main footprint
-            if multi_result.footprints:
-                largest = max(multi_result.footprints, key=lambda f: f.area_m2)
-                result["footprint_geojson"] = largest.geojson
-                result["footprint_area_m2"] = largest.area_m2
-    else:
-        # Single building
-        footprint = extractor.extract_from_coordinates(lat, lon) if lat and lon else None
-        if not footprint and address:
-            footprint = extractor.extract_from_address(address)
+                    if multi_result.footprints:
+                        largest = max(multi_result.footprints, key=lambda f: f.area_m2)
+                        result["footprint_geojson"] = largest.geojson
+                        result["footprint_area_m2"] = largest.area_m2
+            else:
+                footprint = extractor.extract_from_coordinates(lat, lon)
+                if footprint:
+                    result["footprint_geojson"] = footprint.geojson
+                    result["footprint_area_m2"] = footprint.area_m2
+                    result["footprint_source"] = "satellite"
+                    result["confidence"] = footprint.confidence
+        except Exception as e:
+            result["satellite_error"] = str(e)
 
-        if footprint:
-            result["footprint_geojson"] = footprint.geojson
-            result["footprint_area_m2"] = footprint.area_m2
-            result["extraction_method"] = footprint.method
-            result["confidence"] = footprint.confidence
-
-    # Height from Street View
-    if lat and lon:
+    # =========================================================================
+    # STEP 3: Visual analysis (height, floors if not from OSM)
+    # =========================================================================
+    if lat and lon and not result.get("height_m"):
         try:
             analyzer = VisualAnalyzer()
             visual = analyzer.analyze_building(lat, lon)

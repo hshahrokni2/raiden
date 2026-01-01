@@ -34,6 +34,22 @@ from .sweden_buildings import (
     find_building_by_address,
     sweref99_to_wgs84,
 )
+from .gripen_loader import (
+    GripenLoader,
+    GripenBuilding,
+    load_gripen,
+    find_gripen_building,
+)
+from .satellite_fetcher import (
+    SatelliteImage,
+    SatelliteFetcher,
+    EsriSatelliteFetcher,
+    fetch_esri_satellite,
+    FootprintExtractor,
+    ExtractedFootprint,
+    MultiFootprintResult,
+    extract_footprint_from_satellite,
+)
 
 __all__ = [
     # Parsers
@@ -68,4 +84,18 @@ __all__ = [
     "load_sweden_buildings",
     "find_building_by_address",
     "sweref99_to_wgs84",
+    # Gripen energy declarations (nationwide)
+    "GripenLoader",
+    "GripenBuilding",
+    "load_gripen",
+    "find_gripen_building",
+    # Satellite imagery & footprint extraction
+    "SatelliteImage",
+    "SatelliteFetcher",
+    "EsriSatelliteFetcher",
+    "fetch_esri_satellite",
+    "FootprintExtractor",
+    "ExtractedFootprint",
+    "MultiFootprintResult",
+    "extract_footprint_from_satellite",
 ]

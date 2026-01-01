@@ -279,8 +279,11 @@ class SimulationRunner:
         """Auto-detect EnergyPlus installation."""
         candidates = [
             '/usr/local/EnergyPlus-25-1-0/energyplus',
+            '/usr/local/EnergyPlus-25-1-0/energyplus-25.1.0',
             '/Applications/EnergyPlus-25-1-0/energyplus',
+            '/Applications/EnergyPlus-25-1-0/energyplus-25.1.0',
             shutil.which('energyplus'),
+            shutil.which('energyplus-25.1.0'),
         ]
         for path in candidates:
             if path and Path(path).exists():
