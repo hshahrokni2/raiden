@@ -2009,3 +2009,487 @@ def generate_from_footprint(
         output_dir=output_dir,
         **kwargs,
     )
+
+
+# =============================================================================
+# ENHANCED GENERATION WITH HVAC & SCHEDULE MODULES (2026 ROADMAP)
+# =============================================================================
+
+def generate_enhanced(
+    footprint_coords: List[Tuple[float, float]],
+    floors: int,
+    archetype: SwedishArchetype,
+    output_dir: Path,
+    model_name: str = "enhanced_v2",
+    # HVAC selection
+    building_data: Optional[Any] = None,  # SwedishBuilding from GeoJSON
+    gripen_data: Optional[Any] = None,    # GripenBuilding from energy declaration
+    hvac_override: Optional[str] = None,  # Force specific HVAC: 'district_heating', 'gshp', etc.
+    # Schedule selection
+    occupant_profile: Optional[str] = None,  # 'families', 'elderly', 'students', 'mixed'
+    commercial_type: Optional[str] = None,   # 'office', 'retail', 'restaurant'
+    # Other parameters
+    floor_height: float = 2.8,
+    wwr_per_orientation: Optional[Dict[str, float]] = None,
+    latitude: float = 59.35,
+    longitude: float = 17.95,
+) -> BaselineModel:
+    """
+    Generate IDF with enhanced HVAC and schedule modeling.
+
+    This extends generate_from_footprint with:
+    1. Realistic Swedish HVAC systems (instead of IdealLoadsAirSystem)
+    2. Building-type-specific occupancy patterns
+    3. Seasonal Swedish schedules (summer vacation, Christmas, etc.)
+
+    HVAC Selection Priority:
+    1. building_data (from Sweden GeoJSON) → actual heating system
+    2. gripen_data (from energy declaration) → actual heating system
+    3. archetype defaults → era-based inference
+    4. hvac_override → manual specification
+
+    Args:
+        footprint_coords: List of (x, y) coordinates in meters
+        floors: Number of floors
+        archetype: Swedish building archetype
+        output_dir: Output directory
+        model_name: Name for the IDF file
+        building_data: SwedishBuilding from GeoJSON (best source)
+        gripen_data: GripenBuilding from Gripen database
+        hvac_override: Override HVAC selection (e.g., 'district_heating')
+        occupant_profile: Residential profile ('families', 'elderly', 'students')
+        commercial_type: Commercial type ('office', 'retail', 'restaurant')
+        floor_height: Height per floor (m)
+        wwr_per_orientation: WWR by direction {'N': 0.15, 'S': 0.25, ...}
+        latitude: Site latitude
+        longitude: Site longitude
+
+    Returns:
+        BaselineModel with enhanced IDF
+    """
+    # Import enhanced modules
+    try:
+        from ..hvac import select_hvac_system, generate_hvac_idf, HVACSelection
+        from ..schedules import get_pattern_for_building, generate_schedule_idf
+        ENHANCED_AVAILABLE = True
+    except ImportError as e:
+        logger.warning(f"Enhanced modules not available: {e}. Using standard generator.")
+        ENHANCED_AVAILABLE = False
+
+    if not ENHANCED_AVAILABLE:
+        # Fall back to standard generator
+        return generate_from_footprint(
+            footprint_coords=footprint_coords,
+            floors=floors,
+            archetype=archetype,
+            output_dir=output_dir,
+            model_name=model_name,
+            floor_height=floor_height,
+            wwr_per_orientation=wwr_per_orientation,
+            latitude=latitude,
+            longitude=longitude,
+        )
+
+    # Select HVAC system using priority chain
+    if hvac_override:
+        from ..hvac import SwedishHVACSystem, VentilationSystem, HVACSelection
+        hvac_map = {
+            'district_heating': SwedishHVACSystem.DISTRICT_HEATING,
+            'gshp': SwedishHVACSystem.GROUND_SOURCE_HP,
+            'ground_source_hp': SwedishHVACSystem.GROUND_SOURCE_HP,
+            'exhaust_air_hp': SwedishHVACSystem.EXHAUST_AIR_HP,
+            'ashp': SwedishHVACSystem.AIR_SOURCE_HP,
+            'air_source_hp': SwedishHVACSystem.AIR_SOURCE_HP,
+            'direct_electric': SwedishHVACSystem.DIRECT_ELECTRIC,
+        }
+        hvac_selection = HVACSelection(
+            primary_heating=hvac_map.get(hvac_override, SwedishHVACSystem.DISTRICT_HEATING),
+            ventilation=VentilationSystem.FTX if archetype.hvac.heat_recovery_efficiency > 0 else VentilationSystem.F_SYSTEM,
+            heat_recovery_eff=archetype.hvac.heat_recovery_efficiency,
+            detected_from="manual_override",
+            confidence=1.0,
+        )
+    else:
+        hvac_selection = select_hvac_system(
+            building=building_data,
+            gripen=gripen_data,
+            archetype=archetype,
+            construction_year=archetype.construction_year_range[0] if hasattr(archetype, 'construction_year_range') else None,
+        )
+
+    logger.info(f"HVAC Selection: {hvac_selection.primary_heating.value} "
+                f"(confidence: {hvac_selection.confidence:.0%}, source: {hvac_selection.detected_from})")
+
+    # Get occupancy pattern
+    building_type = "commercial" if commercial_type else "residential"
+    occupancy_pattern = get_pattern_for_building(
+        building_type=building_type,
+        occupant_profile=occupant_profile,
+        commercial_type=commercial_type,
+    )
+
+    logger.info(f"Occupancy Pattern: {occupancy_pattern.name}")
+
+    # Generate base IDF using standard generator
+    generator = GeomEppyGenerator()
+
+    # Analyze footprint
+    floor_plan = analyze_footprint(footprint_coords)
+
+    if wwr_per_orientation is None:
+        wwr_per_orientation = {'N': 0.15, 'S': 0.25, 'E': 0.20, 'W': 0.20}
+
+    # Create output directory
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    idf_path = output_dir / f"{model_name}.idf"
+
+    # Create IDF
+    idf = generator._create_minimal_idf()
+    generator._set_location(idf, latitude, longitude)
+    generator._add_materials(idf, archetype)
+
+    # Add enhanced schedules from occupancy pattern
+    _add_enhanced_schedules(idf, occupancy_pattern, generator._newidfobject)
+
+    # Build geometry
+    generator._build_geometry(
+        idf=idf,
+        floor_plan=floor_plan,
+        floors=floors,
+        floor_height=floor_height,
+        archetype=archetype,
+    )
+
+    # Add windows
+    generator._add_windows(
+        idf=idf,
+        floor_plan=floor_plan,
+        floors=floors,
+        floor_height=floor_height,
+        wwr_per_orientation=wwr_per_orientation,
+    )
+
+    # Add internal loads with enhanced schedules
+    for floor in range(1, floors + 1):
+        zone_name = f"Floor{floor}"
+        _add_enhanced_internal_loads(
+            idf, zone_name, floor_plan.area, archetype, occupancy_pattern,
+            generator._newidfobject
+        )
+        _add_enhanced_hvac(
+            idf, zone_name, hvac_selection, occupancy_pattern,
+            generator._newidfobject
+        )
+
+    # Add outputs
+    generator._add_outputs(idf)
+
+    # Save IDF
+    idf.saveas(str(idf_path))
+    logger.info(f"Saved enhanced IDF to {idf_path}")
+
+    # Calculate heating estimate
+    gross_area = floor_plan.area * floors
+    estimated_heating = generator._estimate_heating(floor_plan, floors, archetype)
+
+    return BaselineModel(
+        idf_path=idf_path,
+        weather_file=generator._select_weather_file(latitude),
+        archetype_used=f"{archetype.name}_enhanced",
+        floor_area_m2=gross_area,
+        predicted_heating_kwh_m2=estimated_heating,
+    )
+
+
+def _add_enhanced_schedules(idf, occupancy_pattern, newidfobject):
+    """Add enhanced schedules from SwedishOccupancyPattern."""
+    # Schedule type limits
+    newidfobject(idf, "ScheduleTypeLimits",
+        Name="Fraction",
+        Lower_Limit_Value=0,
+        Upper_Limit_Value=1,
+        Numeric_Type="Continuous",
+    )
+
+    newidfobject(idf, "ScheduleTypeLimits",
+        Name="Temperature",
+        Lower_Limit_Value=-50,
+        Upper_Limit_Value=50,
+        Numeric_Type="Continuous",
+    )
+
+    newidfobject(idf, "ScheduleTypeLimits",
+        Name="Any Number",
+        Numeric_Type="Continuous",
+    )
+
+    # Get hourly profiles from pattern
+    occ_wd = occupancy_pattern.occupancy.base.default.weekday.values
+    occ_we = occupancy_pattern.occupancy.base.default.sunday.values
+    light_wd = occupancy_pattern.lighting.base.default.weekday.values
+    light_we = occupancy_pattern.lighting.base.default.sunday.values
+    equip_wd = occupancy_pattern.equipment.base.default.weekday.values
+    equip_we = occupancy_pattern.equipment.base.default.sunday.values
+
+    # Occupancy schedule using Schedule:Day:Hourly
+    newidfobject(idf, "Schedule:Day:Hourly",
+        Name="OccupancyWeekday",
+        Schedule_Type_Limits_Name="Fraction",
+        **{f"Hour_{i+1}": occ_wd[i] for i in range(24)}
+    )
+
+    newidfobject(idf, "Schedule:Day:Hourly",
+        Name="OccupancyWeekend",
+        Schedule_Type_Limits_Name="Fraction",
+        **{f"Hour_{i+1}": occ_we[i] for i in range(24)}
+    )
+
+    newidfobject(idf, "Schedule:Week:Daily",
+        Name="OccupancyWeek",
+        Sunday_ScheduleDay_Name="OccupancyWeekend",
+        Monday_ScheduleDay_Name="OccupancyWeekday",
+        Tuesday_ScheduleDay_Name="OccupancyWeekday",
+        Wednesday_ScheduleDay_Name="OccupancyWeekday",
+        Thursday_ScheduleDay_Name="OccupancyWeekday",
+        Friday_ScheduleDay_Name="OccupancyWeekday",
+        Saturday_ScheduleDay_Name="OccupancyWeekend",
+    )
+
+    newidfobject(idf, "Schedule:Year",
+        Name="OccupancySchedule",
+        Schedule_Type_Limits_Name="Fraction",
+        ScheduleWeek_Name_1="OccupancyWeek",
+        Start_Month_1=1,
+        Start_Day_1=1,
+        End_Month_1=12,
+        End_Day_1=31,
+    )
+
+    # Lighting schedule
+    newidfobject(idf, "Schedule:Day:Hourly",
+        Name="LightingWeekday",
+        Schedule_Type_Limits_Name="Fraction",
+        **{f"Hour_{i+1}": light_wd[i] for i in range(24)}
+    )
+
+    newidfobject(idf, "Schedule:Day:Hourly",
+        Name="LightingWeekend",
+        Schedule_Type_Limits_Name="Fraction",
+        **{f"Hour_{i+1}": light_we[i] for i in range(24)}
+    )
+
+    newidfobject(idf, "Schedule:Week:Daily",
+        Name="LightingWeek",
+        Sunday_ScheduleDay_Name="LightingWeekend",
+        Monday_ScheduleDay_Name="LightingWeekday",
+        Tuesday_ScheduleDay_Name="LightingWeekday",
+        Wednesday_ScheduleDay_Name="LightingWeekday",
+        Thursday_ScheduleDay_Name="LightingWeekday",
+        Friday_ScheduleDay_Name="LightingWeekday",
+        Saturday_ScheduleDay_Name="LightingWeekend",
+    )
+
+    newidfobject(idf, "Schedule:Year",
+        Name="LightingSchedule",
+        Schedule_Type_Limits_Name="Fraction",
+        ScheduleWeek_Name_1="LightingWeek",
+        Start_Month_1=1,
+        Start_Day_1=1,
+        End_Month_1=12,
+        End_Day_1=31,
+    )
+
+    # Equipment schedule
+    newidfobject(idf, "Schedule:Day:Hourly",
+        Name="EquipmentWeekday",
+        Schedule_Type_Limits_Name="Fraction",
+        **{f"Hour_{i+1}": equip_wd[i] for i in range(24)}
+    )
+
+    newidfobject(idf, "Schedule:Day:Hourly",
+        Name="EquipmentWeekend",
+        Schedule_Type_Limits_Name="Fraction",
+        **{f"Hour_{i+1}": equip_we[i] for i in range(24)}
+    )
+
+    newidfobject(idf, "Schedule:Week:Daily",
+        Name="EquipmentWeek",
+        Sunday_ScheduleDay_Name="EquipmentWeekend",
+        Monday_ScheduleDay_Name="EquipmentWeekday",
+        Tuesday_ScheduleDay_Name="EquipmentWeekday",
+        Wednesday_ScheduleDay_Name="EquipmentWeekday",
+        Thursday_ScheduleDay_Name="EquipmentWeekday",
+        Friday_ScheduleDay_Name="EquipmentWeekday",
+        Saturday_ScheduleDay_Name="EquipmentWeekend",
+    )
+
+    newidfobject(idf, "Schedule:Year",
+        Name="EquipmentSchedule",
+        Schedule_Type_Limits_Name="Fraction",
+        ScheduleWeek_Name_1="EquipmentWeek",
+        Start_Month_1=1,
+        Start_Day_1=1,
+        End_Month_1=12,
+        End_Day_1=31,
+    )
+
+    # Constant schedules for compatibility
+    newidfobject(idf, "Schedule:Constant",
+        Name="AlwaysOn",
+        Schedule_Type_Limits_Name="Fraction",
+        Hourly_Value=1,
+    )
+
+    newidfobject(idf, "Schedule:Constant",
+        Name="HeatSet",
+        Schedule_Type_Limits_Name="Temperature",
+        Hourly_Value=occupancy_pattern.heating_setpoint_occupied_c,
+    )
+
+    newidfobject(idf, "Schedule:Constant",
+        Name="CoolSet",
+        Schedule_Type_Limits_Name="Temperature",
+        Hourly_Value=occupancy_pattern.cooling_setpoint_c,
+    )
+
+    newidfobject(idf, "Schedule:Constant",
+        Name="ThermType",
+        Schedule_Type_Limits_Name="Any Number",
+        Hourly_Value=4,
+    )
+
+    newidfobject(idf, "Schedule:Constant",
+        Name="ActivityLevel",
+        Schedule_Type_Limits_Name="Any Number",
+        Hourly_Value=120,
+    )
+
+    # OA spec
+    newidfobject(idf, "DesignSpecification:OutdoorAir",
+        Name="OA_Spec",
+        Outdoor_Air_Method="Flow/Area",
+        Outdoor_Air_Flow_per_Zone_Floor_Area=0.00035,
+    )
+
+
+def _add_enhanced_internal_loads(idf, zone_name, floor_area, archetype, occupancy_pattern, newidfobject):
+    """Add internal loads with enhanced schedules from occupancy pattern."""
+    # People - using pattern density
+    num_people = max(1, floor_area / occupancy_pattern.occupant_density_m2_person)
+
+    newidfobject(idf, "People",
+        Name=f"{zone_name}_People",
+        Zone_or_ZoneList_or_Space_or_SpaceList_Name=zone_name,
+        Number_of_People_Schedule_Name="OccupancySchedule",
+        Number_of_People_Calculation_Method="People",
+        Number_of_People=num_people,
+        Fraction_Radiant=0.3,
+        Activity_Level_Schedule_Name="ActivityLevel",
+    )
+
+    # Lights - using pattern lighting density and schedule
+    newidfobject(idf, "Lights",
+        Name=f"{zone_name}_Lights",
+        Zone_or_ZoneList_or_Space_or_SpaceList_Name=zone_name,
+        Schedule_Name="LightingSchedule",
+        Design_Level_Calculation_Method="Watts/Area",
+        Watts_per_Floor_Area=occupancy_pattern.lighting_power_density_w_m2,
+        Return_Air_Fraction=0.2,
+        Fraction_Radiant=0.6,
+        Fraction_Visible=0.2,
+    )
+
+    # Equipment - using pattern equipment density and schedule
+    newidfobject(idf, "ElectricEquipment",
+        Name=f"{zone_name}_Equipment",
+        Zone_or_ZoneList_or_Space_or_SpaceList_Name=zone_name,
+        Schedule_Name="EquipmentSchedule",
+        Design_Level_Calculation_Method="Watts/Area",
+        Watts_per_Floor_Area=occupancy_pattern.equipment_power_density_w_m2,
+        Fraction_Latent=0,
+        Fraction_Radiant=0.3,
+        Fraction_Lost=0,
+    )
+
+    # Infiltration - from archetype
+    newidfobject(idf, "ZoneInfiltration:DesignFlowRate",
+        Name=f"{zone_name}_Infiltration",
+        Zone_or_ZoneList_or_Space_or_SpaceList_Name=zone_name,
+        Schedule_Name="AlwaysOn",
+        Design_Flow_Rate_Calculation_Method="AirChanges/Hour",
+        Air_Changes_per_Hour=archetype.envelope.infiltration_ach,
+    )
+
+
+def _add_enhanced_hvac(idf, zone_name, hvac_selection, occupancy_pattern, newidfobject):
+    """Add HVAC using HVACSelection and occupancy pattern setpoints."""
+    from ..hvac import SwedishHVACSystem, VentilationSystem
+
+    hr_eff = hvac_selection.heat_recovery_eff
+    hr_type = "Sensible" if hr_eff > 0 else "None"
+
+    # Get setpoints from occupancy pattern
+    heat_setpoint = occupancy_pattern.heating_setpoint_occupied_c
+    cool_setpoint = occupancy_pattern.cooling_setpoint_c
+
+    # Note: This still uses IdealLoadsAirSystem for now.
+    # Full HVAC system replacement requires complete plant loop modeling.
+    # See generate_hvac_idf() for EnergyPlus HVAC templates when ready.
+
+    newidfobject(idf, "ZoneHVAC:IdealLoadsAirSystem",
+        Name=f"{zone_name}_IdealLoads",
+        Zone_Supply_Air_Node_Name=f"{zone_name}_Supply",
+        Zone_Exhaust_Air_Node_Name=f"{zone_name}_Exhaust",
+        Maximum_Heating_Supply_Air_Temperature=50,
+        Minimum_Cooling_Supply_Air_Temperature=13,
+        Maximum_Heating_Supply_Air_Humidity_Ratio=0.015,
+        Minimum_Cooling_Supply_Air_Humidity_Ratio=0.009,
+        Heating_Limit="NoLimit",
+        Cooling_Limit="NoLimit",
+        Dehumidification_Control_Type="ConstantSupplyHumidityRatio",
+        Cooling_Sensible_Heat_Ratio="",  # EnergyPlus 25.1 bug workaround
+        Humidification_Control_Type="ConstantSupplyHumidityRatio",
+        Design_Specification_Outdoor_Air_Object_Name="OA_Spec",
+        Outdoor_Air_Inlet_Node_Name=f"{zone_name}_OA",
+        Demand_Controlled_Ventilation_Type="None",
+        Outdoor_Air_Economizer_Type="NoEconomizer",
+        Heat_Recovery_Type=hr_type,
+        Sensible_Heat_Recovery_Effectiveness=hr_eff,
+        Latent_Heat_Recovery_Effectiveness=0,
+    )
+
+    # Equipment list
+    newidfobject(idf, "ZoneHVAC:EquipmentList",
+        Name=f"{zone_name}_EquipList",
+        Load_Distribution_Scheme="SequentialLoad",
+        Zone_Equipment_1_Object_Type="ZoneHVAC:IdealLoadsAirSystem",
+        Zone_Equipment_1_Name=f"{zone_name}_IdealLoads",
+        Zone_Equipment_1_Cooling_Sequence=1,
+        Zone_Equipment_1_Heating_or_NoLoad_Sequence=1,
+    )
+
+    # Equipment connections
+    newidfobject(idf, "ZoneHVAC:EquipmentConnections",
+        Zone_Name=zone_name,
+        Zone_Conditioning_Equipment_List_Name=f"{zone_name}_EquipList",
+        Zone_Air_Inlet_Node_or_NodeList_Name=f"{zone_name}_Supply",
+        Zone_Air_Exhaust_Node_or_NodeList_Name=f"{zone_name}_Exhaust",
+        Zone_Air_Node_Name=f"{zone_name}_AirNode",
+        Zone_Return_Air_Node_or_NodeList_Name=f"{zone_name}_Return",
+    )
+
+    # Thermostat with pattern setpoints
+    newidfobject(idf, "ZoneControl:Thermostat",
+        Name=f"{zone_name}_Thermostat",
+        Zone_or_ZoneList_Name=zone_name,
+        Control_Type_Schedule_Name="ThermType",
+        Control_1_Object_Type="ThermostatSetpoint:DualSetpoint",
+        Control_1_Name=f"{zone_name}_DualSetpoint",
+    )
+
+    newidfobject(idf, "ThermostatSetpoint:DualSetpoint",
+        Name=f"{zone_name}_DualSetpoint",
+        Heating_Setpoint_Temperature_Schedule_Name="HeatSet",
+        Cooling_Setpoint_Temperature_Schedule_Name="CoolSet",
+    )

@@ -106,6 +106,7 @@ from .generator_v2 import (
     GeomEppyGenerator,
     analyze_footprint,
     generate_from_footprint,
+    generate_enhanced,  # 2026 Roadmap: Enhanced HVAC + schedules integration
     FloorPlan,
     WallSegment,
     GEOMEPPY_AVAILABLE,
@@ -218,6 +219,7 @@ __all__ = [
     'GeomEppyGenerator',
     'analyze_footprint',
     'generate_from_footprint',
+    'generate_enhanced',  # 2026 Roadmap: Enhanced HVAC + schedules
     'FloorPlan',
     'WallSegment',
     'GEOMEPPY_AVAILABLE',

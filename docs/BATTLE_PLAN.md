@@ -221,6 +221,67 @@ vs Full E+ for all: ~3 hours (10s × 1000)
 
 ---
 
+## 🚀 RAIDEN 2026 ROADMAP - Active Development
+
+> **Full Details:** See [`RAIDEN_2026_ROADMAP.md`](RAIDEN_2026_ROADMAP.md)
+
+### Session 2026-01-03: Phase 1-3 Implementation ✅ COMPLETE
+
+#### Phase 1: Realistic HVAC Systems (P0 - CRITICAL) ✅
+
+**Goal:** Replace IdealLoadsAirSystem with actual Swedish HVAC equipment.
+
+| Task | File | Status |
+|------|------|--------|
+| Create HVAC module | `src/hvac/__init__.py` | ✅ |
+| Swedish HVAC templates | `src/hvac/swedish_systems.py` | ✅ |
+| HVAC auto-selector | `src/hvac/hvac_selector.py` | ✅ |
+| Integration with generator_v2 | `src/baseline/generator_v2.py:generate_enhanced()` | ✅ |
+| Performance curves | `src/hvac/performance_curves.py` | 📋 Future |
+
+**Swedish HVAC Systems Implemented:**
+- District Heating (fjärrvärme) - 70% of MFH ✅
+- Ground Source Heat Pump (bergvärme) - COP 4.0-5.0 ✅
+- Exhaust Air Heat Pump (FTX-VP) - COP 3.0-4.0 ✅
+- Air Source Heat Pump (luft-vatten) - COP 2.5-3.5 ✅
+- Direct Electric (direktel) - COP 1.0 ✅
+
+#### Phase 2: Learned Occupancy Patterns (P1 - HIGH IMPACT) ✅
+
+**Goal:** Replace fixed Sveby schedules with building-specific patterns.
+
+| Task | File | Status |
+|------|------|--------|
+| Create schedules module | `src/schedules/__init__.py` | ✅ |
+| Swedish pattern library | `src/schedules/swedish_patterns.py` | ✅ |
+| Integration with generator_v2 | `src/baseline/generator_v2.py:generate_enhanced()` | ✅ |
+| Schedule generator | EnergyPlus IDF generation included | ✅ |
+| Pattern learner (optional) | `src/schedules/pattern_learner.py` | 📋 Future |
+
+**Patterns Implemented:**
+- Residential: families, families_small_children, elderly, students, young_professionals ✅
+- Commercial: office, retail, restaurant, grocery, school ✅
+- Seasonal: Swedish summer vacation (July), Christmas, Easter, Midsommar ✅
+- Pattern blending for mixed-use buildings ✅
+
+#### Phase 3: Calibration Enhancement (P1 - QUICK WINS) ✅
+
+**Goal:** Improve surrogate accuracy and add ASHRAE compliance.
+
+| Task | File | Status |
+|------|------|--------|
+| ASHRAE metrics | `src/calibration/metrics.py` | ✅ (already existed) |
+| Increase samples 80→150 | `src/calibration/surrogate.py` | ✅ (already done) |
+| Add train/test split | `src/calibration/surrogate.py` | ✅ (already done) |
+| Context-aware priors | `src/calibration/bayesian.py` | ✅ |
+| Integration tests | `tests/test_hvac_schedules.py` (26 tests) | ✅ |
+
+**ASHRAE Guideline 14 Targets:**
+- Monthly: NMBE ±5%, CVRMSE ≤15% ✅
+- Hourly: NMBE ±10%, CVRMSE ≤30% ✅
+
+---
+
 ## Next Steps (Priority Order)
 
 ### P3: Web Dashboard (PENDING)

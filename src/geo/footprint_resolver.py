@@ -391,6 +391,107 @@ class FootprintResolver:
         
         return None
     
+    def _parse_address_string(self, address_string: str) -> List[str]:
+        """
+        Parse a comma-separated address string into individual addresses.
+        
+        Handles various Swedish formats:
+        - "Jordledningen 1, Jordledningen 2, Kontakten 2" → 3 addresses
+        - "Carl Malmstens väg 2, 4, 6, 8" → 4 addresses (expands numbers)
+        - "Ripstigen 2, 4, 6, 8" → 4 addresses
+        - "Ursviks Allé 45-57" → 7 addresses (expands ranges)
+        - "Gatan 1-3, 5-7, 9-11" → 9 addresses
+        - "Backvägen 3 och Backvägen 5" → 2 addresses (Swedish "och" = "and")
+        """
+        if not address_string:
+            return []
+        
+        # Handle Swedish "och" (and) - replace with comma before splitting
+        address_string = re.sub(r'\s+och\s+', ', ', address_string, flags=re.IGNORECASE)
+        
+        addresses = []
+        parts = [p.strip() for p in address_string.split(',')]
+        
+        current_street = None
+        
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            
+            # Remove trailing city/postal code
+            part = re.sub(r'\s+\d{3}\s*\d{2}\s*\w+$', '', part)  # "170 76 Solna"
+            part = re.sub(r'\s+(Stockholm|Solna|Sundbyberg|Nacka|Värmdö)$', '', part, flags=re.IGNORECASE)
+            part = part.strip()
+            
+            # Check if this part has a street name or is just numbers
+            has_street = re.search(r'[a-zA-ZåäöÅÄÖ]{3,}', part)
+            
+            if has_street:
+                # Full address like "Jordledningen 1" or "Carl Malmstens väg 2-8"
+                current_street = re.sub(r'\s*[\d\-]+\s*[A-Za-z]?\s*$', '', part).strip()
+                
+                # Extract numbers/ranges
+                numbers_match = re.search(r'([\d]+(?:\s*-\s*\d+)?(?:\s*[A-Za-z])?(?:\s*[&,]\s*[\d]+(?:\s*[A-Za-z])?)*)$', part)
+                if numbers_match:
+                    numbers_str = numbers_match.group(1)
+                    expanded = self._expand_numbers(numbers_str)
+                    for num in expanded:
+                        addresses.append(f"{current_street} {num}")
+                else:
+                    # Just street name, maybe with "och" etc
+                    addresses.append(part)
+            else:
+                # Just numbers like "4", "6", "8" - use last known street
+                if current_street:
+                    expanded = self._expand_numbers(part)
+                    for num in expanded:
+                        addresses.append(f"{current_street} {num}")
+        
+        # Dedupe while preserving order
+        seen = set()
+        unique = []
+        for addr in addresses:
+            normalized = addr.lower().strip()
+            if normalized not in seen:
+                seen.add(normalized)
+                unique.append(addr)
+        
+        return unique
+    
+    def _expand_numbers(self, numbers_str: str) -> List[str]:
+        """
+        Expand number ranges like "2-8" to ["2", "4", "6", "8"] (even) or ["1", "3", "5"] (odd).
+        Also handles "1A", "2A-B", etc.
+        """
+        results = []
+        
+        # Split on & or , 
+        parts = re.split(r'\s*[&,]\s*', numbers_str)
+        
+        for part in parts:
+            part = part.strip()
+            
+            # Check for range like "2-8" or "45-57"
+            range_match = re.match(r'^(\d+)\s*-\s*(\d+)([A-Za-z])?$', part)
+            if range_match:
+                start, end = int(range_match.group(1)), int(range_match.group(2))
+                suffix = range_match.group(3) or ''
+                
+                # Determine step (1 for small ranges, 2 for address-like ranges)
+                if start % 2 == end % 2:  # Same parity → step by 2
+                    step = 2
+                else:
+                    step = 1
+                
+                # Generate range
+                for n in range(start, end + 1, step):
+                    results.append(f"{n}{suffix}")
+            elif part:
+                results.append(part)
+        
+        return results
+    
     def _normalize_address(self, address: str) -> str:
         """Normalize address for comparison."""
         if not address:
@@ -943,6 +1044,110 @@ def resolve_brf_footprints(
         footprints = resolver.resolve(lat, lon)
     
     return [fp.to_dict() for fp in footprints]
+
+
+def resolve_multi_building_brf(
+    lat: float,
+    lon: float,
+    address_string: str,
+    city: str = "Stockholm",
+) -> dict:
+    """
+    Resolve footprints for a multi-building BRF from a comma-separated address string.
+    
+    This is the MAIN entry point for fixing BRFs that have multiple buildings
+    but are currently showing as single shapes.
+    
+    Args:
+        lat, lon: BRF coordinates (approximate center)
+        address_string: Comma-separated addresses like "Storgatan 1, 3, 5" or
+                       "Gatan 1, Gatan 3, Gatan 5" or "Väg 1-5, Allé 2-8"
+        city: City name for geocoding
+        
+    Returns:
+        GeoJSON Feature with GeometryCollection containing all buildings,
+        or single Polygon if only one building found.
+        
+    Example:
+        result = resolve_multi_building_brf(
+            lat=59.33, lon=18.05,
+            address_string="Jordledningen 1, Jordledningen 2, Kontakten 2",
+            city="Stockholm"
+        )
+        # Returns GeometryCollection with 3 building polygons
+    """
+    resolver = FootprintResolver()
+    
+    # Parse the address string into individual addresses
+    addresses = resolver._parse_address_string(address_string)
+    
+    if not addresses:
+        # Fall back to single building resolution
+        footprints = resolver.resolve(lat, lon)
+        if footprints:
+            return footprints[0].to_dict()
+        return {}
+    
+    # Resolve each address to a building
+    footprints = resolver.resolve_by_addresses(addresses, city=city)
+    
+    if not footprints:
+        # Try single building as fallback
+        footprints = resolver.resolve(lat, lon)
+    
+    if not footprints:
+        return {}
+    
+    if len(footprints) == 1:
+        # Single building - return as Feature with Polygon
+        fp = footprints[0]
+        return {
+            "type": "Feature",
+            "geometry": fp.geometry,
+            "properties": {
+                "height": fp.height_m or 15,
+                "floors": fp.floors,
+                "source": fp.source,
+                "osm_id": fp.osm_id,
+                "confidence": fp.confidence,
+                "buildings_count": 1,
+            }
+        }
+    
+    # Multiple buildings - return as GeometryCollection
+    geometries = []
+    osm_ids = []
+    total_height = 0
+    height_count = 0
+    
+    for fp in footprints:
+        if fp.geometry:
+            geometries.append(fp.geometry)
+            if fp.osm_id:
+                osm_ids.append(f"way/{fp.osm_id}" if not fp.osm_id.startswith("way/") else fp.osm_id)
+            if fp.height_m:
+                total_height += fp.height_m
+                height_count += 1
+    
+    if not geometries:
+        return {}
+    
+    avg_height = total_height / height_count if height_count > 0 else 15
+    
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "GeometryCollection",
+            "geometries": geometries
+        },
+        "properties": {
+            "height": avg_height,
+            "source": "osm_multi_building",
+            "osm_ids": osm_ids,
+            "buildings_count": len(geometries),
+            "addresses_parsed": len(addresses),
+        }
+    }
 
 
 def resolve_shared_building(
