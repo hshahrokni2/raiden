@@ -52,6 +52,18 @@ from .hvac_selector import (
     hvac_from_archetype,
 )
 
+from .performance_curves import (
+    HeatPumpType,
+    PerformanceCurve,
+    HeatPumpPerformance,
+    SWEDISH_HEAT_PUMPS,
+    get_heat_pump_performance,
+    calculate_seasonal_cop,
+    generate_idf_performance_curves,
+    get_scop,
+    SWEDISH_SCOP_REFERENCE,
+)
+
 __all__ = [
     # Enums
     "SwedishHVACSystem",
@@ -70,4 +82,14 @@ __all__ = [
     "EXHAUST_AIR_HP_TEMPLATE",
     "GSHP_TEMPLATE",
     "RADIATOR_TEMPLATE",
+    # Performance curves
+    "HeatPumpType",
+    "PerformanceCurve",
+    "HeatPumpPerformance",
+    "SWEDISH_HEAT_PUMPS",
+    "get_heat_pump_performance",
+    "calculate_seasonal_cop",
+    "generate_idf_performance_curves",
+    "get_scop",
+    "SWEDISH_SCOP_REFERENCE",
 ]

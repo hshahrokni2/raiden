@@ -123,6 +123,62 @@ class TestHVACIDFGeneration:
         assert "Zone1" in idf_snippet
 
 
+class TestHVACPerformanceCurves:
+    """Test HVAC performance curves for heat pumps."""
+
+    def test_heat_pump_type_enum(self):
+        """Heat pump types are defined."""
+        from src.hvac import HeatPumpType
+
+        types = list(HeatPumpType)
+        assert HeatPumpType.GROUND_SOURCE in types
+        assert HeatPumpType.AIR_SOURCE in types
+        assert HeatPumpType.EXHAUST_AIR in types
+
+    def test_get_heat_pump_performance(self):
+        """Can get performance model for each heat pump type."""
+        from src.hvac import HeatPumpType, get_heat_pump_performance
+
+        gshp = get_heat_pump_performance(HeatPumpType.GROUND_SOURCE)
+        assert gshp.nominal_cop >= 3.5
+        assert gshp.name is not None
+
+        ashp = get_heat_pump_performance(HeatPumpType.AIR_SOURCE)
+        assert ashp.nominal_cop >= 2.5
+
+    def test_cop_temperature_dependence(self):
+        """COP varies with temperature correctly."""
+        from src.hvac import HeatPumpType, get_heat_pump_performance
+
+        gshp = get_heat_pump_performance(HeatPumpType.GROUND_SOURCE)
+
+        # COP should decrease with higher sink temperature
+        cop_35 = gshp.get_cop(0, 35)
+        cop_55 = gshp.get_cop(0, 55)
+        assert cop_35 > cop_55, "COP should decrease with higher sink temp"
+
+    def test_ashp_cold_weather_performance(self):
+        """ASHP COP drops significantly in cold weather."""
+        from src.hvac import HeatPumpType, get_heat_pump_performance
+
+        ashp = get_heat_pump_performance(HeatPumpType.AIR_SOURCE)
+
+        cop_cold = ashp.get_cop(-15, 40)
+        cop_mild = ashp.get_cop(7, 40)
+        assert cop_mild > cop_cold, "COP should be higher in mild weather"
+        assert cop_cold < 2.0, "COP should be low at -15°C"
+
+    def test_quick_scop_lookup(self):
+        """Quick SCOP lookup returns reasonable values."""
+        from src.hvac import HeatPumpType, get_scop
+
+        gshp_scop = get_scop(HeatPumpType.GROUND_SOURCE, "low_temp_radiator")
+        assert 4.0 <= gshp_scop <= 5.0
+
+        ashp_scop = get_scop(HeatPumpType.AIR_SOURCE, "standard_radiator")
+        assert 2.5 <= ashp_scop <= 3.5
+
+
 # =============================================================================
 # SCHEDULES MODULE TESTS
 # =============================================================================
