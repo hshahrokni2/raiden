@@ -20,6 +20,19 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import logging
 
+from .performance_curves import (
+    HeatPumpType,
+    PerformanceCurve,
+    get_heat_pump_performance,
+    GSHP_HEATING_CAPACITY_CURVE,
+    GSHP_HEATING_COP_CURVE,
+    GSHP_PART_LOAD_CURVE,
+    ASHP_HEATING_CAPACITY_CURVE,
+    ASHP_HEATING_COP_CURVE,
+    ASHP_PART_LOAD_CURVE,
+    EXHAUST_HP_HEATING_COP_CURVE,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -679,6 +692,111 @@ Fan:SystemModel,
 '''
 
 
+def _generate_named_curve(base_curve: PerformanceCurve, hp_name: str, suffix: str) -> str:
+    """
+    Generate EnergyPlus curve with building-specific name.
+
+    Args:
+        base_curve: The base performance curve with coefficients
+        hp_name: Heat pump name prefix
+        suffix: Curve purpose suffix (CAPFTemp, EIRFTemp, etc.)
+
+    Returns:
+        IDF curve object string
+    """
+    curve_name = f"{hp_name}_{suffix}"
+
+    if base_curve.curve_type == "biquadratic":
+        return f"""
+Curve:Biquadratic,
+    {curve_name},                        !- Name
+    {base_curve.c1},                     !- Coefficient1 Constant
+    {base_curve.c2},                     !- Coefficient2 x
+    {base_curve.c3},                     !- Coefficient3 x**2
+    {base_curve.c4},                     !- Coefficient4 y
+    {base_curve.c5},                     !- Coefficient5 y**2
+    {base_curve.c6},                     !- Coefficient6 x*y
+    {base_curve.x_min},                  !- Minimum Value of x
+    {base_curve.x_max},                  !- Maximum Value of x
+    {base_curve.y_min},                  !- Minimum Value of y
+    {base_curve.y_max},                  !- Maximum Value of y
+    {base_curve.output_min},             !- Minimum Curve Output
+    {base_curve.output_max};             !- Maximum Curve Output
+"""
+    elif base_curve.curve_type in ("quadratic", "cubic"):
+        # For PLR curves (quadratic/cubic)
+        return f"""
+Curve:Quadratic,
+    {curve_name},                        !- Name
+    {base_curve.c1},                     !- Coefficient1 Constant
+    {base_curve.c2},                     !- Coefficient2 x
+    {base_curve.c3},                     !- Coefficient3 x**2
+    {base_curve.x_min},                  !- Minimum Value of x
+    {base_curve.x_max},                  !- Maximum Value of x
+    {base_curve.output_min},             !- Minimum Curve Output
+    {base_curve.output_max};             !- Maximum Curve Output
+"""
+    return ""
+
+
+def _generate_hp_performance_curves(
+    system_type: SwedishHVACSystem,
+    hp_name: str,
+    supply_temp_c: float = 35.0,
+) -> tuple[str, float]:
+    """
+    Generate performance curves for a heat pump and return design COP.
+
+    Args:
+        system_type: Swedish HVAC system type
+        hp_name: Heat pump name for curve naming
+        supply_temp_c: Design supply water temperature
+
+    Returns:
+        Tuple of (IDF curves string, design COP)
+    """
+    curves = []
+    design_cop = 3.5  # Default
+
+    if system_type == SwedishHVACSystem.GROUND_SOURCE_HP:
+        hp = get_heat_pump_performance(HeatPumpType.GROUND_SOURCE)
+        design_cop = hp.get_cop(source_temp_c=0.0, sink_temp_c=supply_temp_c)
+
+        curves.append(_generate_named_curve(GSHP_HEATING_CAPACITY_CURVE, hp_name, "Heating_CAPFTemp"))
+        curves.append(_generate_named_curve(GSHP_HEATING_COP_CURVE, hp_name, "Heating_EIRFTemp"))
+        curves.append(_generate_named_curve(GSHP_PART_LOAD_CURVE, hp_name, "Heating_CAPFPLR"))
+        curves.append(_generate_named_curve(GSHP_PART_LOAD_CURVE, hp_name, "Heating_EIRFPLR"))
+
+    elif system_type == SwedishHVACSystem.AIR_SOURCE_HP:
+        hp = get_heat_pump_performance(HeatPumpType.AIR_SOURCE)
+        # Use design point at 7°C outdoor (A7 rating)
+        design_cop = hp.get_cop(source_temp_c=7.0, sink_temp_c=supply_temp_c)
+
+        curves.append(_generate_named_curve(ASHP_HEATING_CAPACITY_CURVE, hp_name, "TotCapFTemp"))
+        curves.append(_generate_named_curve(ASHP_HEATING_COP_CURVE, hp_name, "EIRFTemp"))
+
+    elif system_type == SwedishHVACSystem.EXHAUST_AIR_HP:
+        hp = get_heat_pump_performance(HeatPumpType.EXHAUST_AIR)
+        # Exhaust air source at 21°C
+        design_cop = hp.get_cop(source_temp_c=21.0, sink_temp_c=supply_temp_c)
+
+        curves.append(_generate_named_curve(EXHAUST_HP_HEATING_COP_CURVE, hp_name, "Heating_CAPFTemp"))
+        curves.append(_generate_named_curve(EXHAUST_HP_HEATING_COP_CURVE, hp_name, "Heating_EIRFTemp"))
+        # Simple linear PLR curves for exhaust air HP
+        plr_curve = PerformanceCurve(
+            name="PLR", curve_type="quadratic",
+            c1=1.0, c2=0.0, c3=0.0,
+            x_min=0.0, x_max=1.0,
+            output_min=0.8, output_max=1.0,
+        )
+        curves.append(_generate_named_curve(plr_curve, hp_name, "Heating_CAPFPLR"))
+        curves.append(_generate_named_curve(plr_curve, hp_name, "Heating_EIRFPLR"))
+
+    logger.info(f"Generated performance curves for {system_type.value}: design COP = {design_cop:.2f}")
+
+    return "\n".join(curves), design_cop
+
+
 def generate_hvac_idf(
     system_type: SwedishHVACSystem,
     zone_names: List[str],
@@ -686,13 +804,16 @@ def generate_hvac_idf(
     building_name: str = "Building",
     supply_temp_c: float = 55.0,
     return_temp_c: float = 45.0,
-    cop: float = 3.5,
+    cop: float = None,  # If None, calculate from performance curves
     heat_recovery_eff: float = 0.80,
     sfp: float = 1.5,
     borehole_depth_m: float = 150.0,
 ) -> str:
     """
     Generate EnergyPlus HVAC objects for a Swedish building.
+
+    Uses temperature-dependent performance curves from performance_curves.py
+    for realistic heat pump modeling.
 
     Args:
         system_type: Swedish HVAC system type
@@ -701,13 +822,13 @@ def generate_hvac_idf(
         building_name: Building name for labels
         supply_temp_c: Hot water supply temperature (°C)
         return_temp_c: Hot water return temperature (°C)
-        cop: Heat pump COP at design conditions
+        cop: Heat pump COP at design conditions (if None, calculated from curves)
         heat_recovery_eff: FTX heat recovery effectiveness (0-1)
         sfp: Specific Fan Power (kW/(m³/s))
         borehole_depth_m: GSHP borehole depth (m)
 
     Returns:
-        IDF string with all HVAC objects
+        IDF string with all HVAC objects including performance curves
     """
     plant_name = f"{building_name}_HW_Loop"
     hp_name = f"{building_name}_HP"
@@ -716,6 +837,21 @@ def generate_hvac_idf(
 
     # Generate demand branches (radiators for each zone)
     demand_branches = _generate_demand_branches(zone_names, plant_name)
+
+    # Generate performance curves and get design COP for heat pump systems
+    perf_curves = ""
+    if system_type in (SwedishHVACSystem.GROUND_SOURCE_HP,
+                       SwedishHVACSystem.AIR_SOURCE_HP,
+                       SwedishHVACSystem.EXHAUST_AIR_HP):
+        perf_curves, calculated_cop = _generate_hp_performance_curves(
+            system_type, hp_name, supply_temp_c
+        )
+        # Use calculated COP if not explicitly provided
+        if cop is None:
+            cop = calculated_cop
+    else:
+        if cop is None:
+            cop = 3.5  # Default for other systems
 
     if system_type == SwedishHVACSystem.DISTRICT_HEATING:
         template = DISTRICT_HEATING_TEMPLATE
@@ -729,17 +865,18 @@ def generate_hvac_idf(
 
     elif system_type == SwedishHVACSystem.EXHAUST_AIR_HP:
         template = EXHAUST_AIR_HP_TEMPLATE
-        return template.format(
+        idf_content = template.format(
             building_name=building_name,
             plant_name=plant_name,
             hp_name=hp_name,
             cop=cop,
             demand_branches=demand_branches,
         )
+        return perf_curves + idf_content
 
     elif system_type == SwedishHVACSystem.GROUND_SOURCE_HP:
         template = GSHP_TEMPLATE
-        return template.format(
+        idf_content = template.format(
             building_name=building_name,
             plant_name=plant_name,
             hp_name=hp_name,
@@ -749,16 +886,18 @@ def generate_hvac_idf(
             borehole_depth=borehole_depth_m,
             demand_branches=demand_branches,
         )
+        return perf_curves + idf_content
 
     elif system_type == SwedishHVACSystem.AIR_SOURCE_HP:
         template = AIR_SOURCE_HP_TEMPLATE
-        return template.format(
+        idf_content = template.format(
             building_name=building_name,
             plant_name=plant_name,
             hp_name=hp_name,
             cop=cop,
             demand_branches=demand_branches,
         )
+        return perf_curves + idf_content
 
     else:
         # Fall back to simple IdealLoads for unsupported systems
