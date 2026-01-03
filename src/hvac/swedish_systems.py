@@ -342,34 +342,8 @@ HeatPump:WaterToWater:EquationFit:Heating,
     {hp_name} Heating CAPFPLR,   !- Heating Capacity Modifier Function of Part Load Ratio
     {hp_name} Heating EIRFPLR;   !- Heating Power Modifier Function of Part Load Ratio
 
-!- Performance curves for FTX-VP (exhaust air ~20°C constant)
-Curve:Biquadratic,
-    {hp_name} Heating CAPFTemp,
-    1.0,                         !- Coefficient1 Constant
-    0.0,                         !- Coefficient2 x (source temp, relatively constant)
-    0.0,                         !- Coefficient3 x**2
-    0.0,                         !- Coefficient4 y (load temp)
-    0.0,                         !- Coefficient5 y**2
-    0.0,                         !- Coefficient6 x*y
-    10, 25,                      !- Min/Max X (exhaust air temp range)
-    30, 60;                      !- Min/Max Y (water supply temp range)
-
-Curve:Biquadratic,
-    {hp_name} Heating EIRFTemp,
-    1.0,                         !- Coefficient1 Constant
-    0.0, 0.0, 0.0, 0.0, 0.0,     !- Other coefficients
-    10, 25,
-    30, 60;
-
-Curve:Quadratic,
-    {hp_name} Heating CAPFPLR,
-    1.0, 0.0, 0.0,               !- Coefficients (linear, no degradation)
-    0, 1;                        !- Min/Max PLR
-
-Curve:Quadratic,
-    {hp_name} Heating EIRFPLR,
-    1.0, 0.0, 0.0,               !- Coefficients
-    0, 1;
+!- NOTE: Performance curves are generated separately with actual Swedish HP data
+!- (see _generate_hp_performance_curves() in swedish_systems.py)
 
 !- Electric backup heater (for cold days when HP insufficient)
 Boiler:HotWater,
@@ -498,38 +472,8 @@ HeatPump:WaterToWater:EquationFit:Heating,
     {hp_name} Heating CAPFPLR,
     {hp_name} Heating EIRFPLR;
 
-!- GSHP Performance curves (source temp 0-10°C typical)
-Curve:Biquadratic,
-    {hp_name} Heating CAPFTemp,
-    1.04,                        !- Based on typical GSHP data
-    0.02,                        !- Slight increase with source temp
-    0.0,
-    -0.01,                       !- Slight decrease with higher load temp
-    0.0,
-    0.0,
-    -5, 15,                      !- Source temp range (brine)
-    30, 55;                      !- Load temp range (supply water)
-
-Curve:Biquadratic,
-    {hp_name} Heating EIRFTemp,
-    0.96,
-    -0.02,
-    0.0,
-    0.02,
-    0.0,
-    0.0,
-    -5, 15,
-    30, 55;
-
-Curve:Quadratic,
-    {hp_name} Heating CAPFPLR,
-    1.0, 0.0, 0.0,
-    0.1, 1.0;
-
-Curve:Quadratic,
-    {hp_name} Heating EIRFPLR,
-    0.1, 0.9, 0.0,               !- Part load penalty
-    0.1, 1.0;
+!- NOTE: Performance curves are generated separately with actual Swedish HP data
+!- (see _generate_hp_performance_curves() in swedish_systems.py)
 
 {demand_branches}
 '''
@@ -577,32 +521,9 @@ Coil:Heating:WaterToAirHeatPump:EquationFit,
     ,                            !- Total Heating Capacity Modifier Function of Air Flow Fraction
     {hp_name} EIRFTemp;          !- Heating Power Consumption Modifier Function of Temperature
 
-!- ASHP Performance curves (significant temperature dependency)
-!- COP drops significantly below 0°C
-Curve:Biquadratic,
-    {hp_name} TotCapFTemp,
-    0.8,                         !- Base capacity
-    0.02,                        !- Increases with outdoor temp
-    0.0001,                      !- Quadratic outdoor
-    -0.005,                      !- Decreases with higher supply temp
-    0.0,
-    0.0,
-    -20, 20,                     !- Outdoor temp range (Swedish winter!)
-    25, 55;                      !- Supply temp range
-
-Curve:Biquadratic,
-    {hp_name} EIRFTemp,
-    1.2,                         !- Base EIR (1/COP proxy)
-    -0.03,                       !- Better efficiency at higher outdoor temp
-    0.0005,
-    0.01,                        !- Worse at higher supply temp
-    0.0,
-    0.0,
-    -20, 20,
-    25, 55;
-
-!- Defrost (critical for Swedish climate)
-!- Most ASHP lose 5-15% capacity to defrost below 0°C
+!- NOTE: Performance curves are generated separately with actual Swedish HP data
+!- Includes defrost penalties for Swedish winter conditions
+!- (see _generate_hp_performance_curves() in swedish_systems.py)
 
 {demand_branches}
 '''
@@ -704,7 +625,8 @@ def _generate_named_curve(base_curve: PerformanceCurve, hp_name: str, suffix: st
     Returns:
         IDF curve object string
     """
-    curve_name = f"{hp_name}_{suffix}"
+    # Use space separator to match template references (e.g., "{hp_name} Heating CAPFTemp")
+    curve_name = f"{hp_name} {suffix}"
 
     if base_curve.curve_type == "biquadratic":
         return f"""
@@ -762,16 +684,18 @@ def _generate_hp_performance_curves(
         hp = get_heat_pump_performance(HeatPumpType.GROUND_SOURCE)
         design_cop = hp.get_cop(source_temp_c=0.0, sink_temp_c=supply_temp_c)
 
-        curves.append(_generate_named_curve(GSHP_HEATING_CAPACITY_CURVE, hp_name, "Heating_CAPFTemp"))
-        curves.append(_generate_named_curve(GSHP_HEATING_COP_CURVE, hp_name, "Heating_EIRFTemp"))
-        curves.append(_generate_named_curve(GSHP_PART_LOAD_CURVE, hp_name, "Heating_CAPFPLR"))
-        curves.append(_generate_named_curve(GSHP_PART_LOAD_CURVE, hp_name, "Heating_EIRFPLR"))
+        # Curve names must match template references exactly (with spaces)
+        curves.append(_generate_named_curve(GSHP_HEATING_CAPACITY_CURVE, hp_name, "Heating CAPFTemp"))
+        curves.append(_generate_named_curve(GSHP_HEATING_COP_CURVE, hp_name, "Heating EIRFTemp"))
+        curves.append(_generate_named_curve(GSHP_PART_LOAD_CURVE, hp_name, "Heating CAPFPLR"))
+        curves.append(_generate_named_curve(GSHP_PART_LOAD_CURVE, hp_name, "Heating EIRFPLR"))
 
     elif system_type == SwedishHVACSystem.AIR_SOURCE_HP:
         hp = get_heat_pump_performance(HeatPumpType.AIR_SOURCE)
         # Use design point at 7°C outdoor (A7 rating)
         design_cop = hp.get_cop(source_temp_c=7.0, sink_temp_c=supply_temp_c)
 
+        # ASHP template uses different curve names
         curves.append(_generate_named_curve(ASHP_HEATING_CAPACITY_CURVE, hp_name, "TotCapFTemp"))
         curves.append(_generate_named_curve(ASHP_HEATING_COP_CURVE, hp_name, "EIRFTemp"))
 
@@ -780,8 +704,9 @@ def _generate_hp_performance_curves(
         # Exhaust air source at 21°C
         design_cop = hp.get_cop(source_temp_c=21.0, sink_temp_c=supply_temp_c)
 
-        curves.append(_generate_named_curve(EXHAUST_HP_HEATING_COP_CURVE, hp_name, "Heating_CAPFTemp"))
-        curves.append(_generate_named_curve(EXHAUST_HP_HEATING_COP_CURVE, hp_name, "Heating_EIRFTemp"))
+        # Curve names must match template references exactly (with spaces)
+        curves.append(_generate_named_curve(EXHAUST_HP_HEATING_COP_CURVE, hp_name, "Heating CAPFTemp"))
+        curves.append(_generate_named_curve(EXHAUST_HP_HEATING_COP_CURVE, hp_name, "Heating EIRFTemp"))
         # Simple linear PLR curves for exhaust air HP
         plr_curve = PerformanceCurve(
             name="PLR", curve_type="quadratic",
@@ -789,8 +714,8 @@ def _generate_hp_performance_curves(
             x_min=0.0, x_max=1.0,
             output_min=0.8, output_max=1.0,
         )
-        curves.append(_generate_named_curve(plr_curve, hp_name, "Heating_CAPFPLR"))
-        curves.append(_generate_named_curve(plr_curve, hp_name, "Heating_EIRFPLR"))
+        curves.append(_generate_named_curve(plr_curve, hp_name, "Heating CAPFPLR"))
+        curves.append(_generate_named_curve(plr_curve, hp_name, "Heating EIRFPLR"))
 
     logger.info(f"Generated performance curves for {system_type.value}: design COP = {design_cop:.2f}")
 

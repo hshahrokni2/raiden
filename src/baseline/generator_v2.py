@@ -2170,6 +2170,16 @@ def generate_enhanced(
         wwr_per_orientation=wwr_per_orientation,
     )
 
+    # Determine if we should use real HVAC (vs IdealLoadsAirSystem)
+    use_real_hvac = _supports_real_hvac(hvac_selection)
+    if use_real_hvac:
+        logger.info(f"Using REAL Swedish HVAC: {hvac_selection.primary_heating.value}")
+    else:
+        logger.info(f"Using IdealLoadsAirSystem (fallback for {hvac_selection.primary_heating.value})")
+
+    # Collect zone names for real HVAC injection
+    zone_names = [f"Floor{floor}" for floor in range(1, floors + 1)]
+
     # Add internal loads with enhanced schedules
     for floor in range(1, floors + 1):
         zone_name = f"Floor{floor}"
@@ -2177,10 +2187,12 @@ def generate_enhanced(
             idf, zone_name, floor_plan.area, archetype, occupancy_pattern,
             generator._newidfobject
         )
-        _add_enhanced_hvac(
-            idf, zone_name, hvac_selection, occupancy_pattern,
-            generator._newidfobject
-        )
+        # Only add IdealLoadsAirSystem if NOT using real HVAC
+        if not use_real_hvac:
+            _add_enhanced_hvac(
+                idf, zone_name, hvac_selection, occupancy_pattern,
+                generator._newidfobject
+            )
 
     # Add outputs
     generator._add_outputs(idf)
@@ -2188,6 +2200,17 @@ def generate_enhanced(
     # Save IDF
     idf.saveas(str(idf_path))
     logger.info(f"Saved enhanced IDF to {idf_path}")
+
+    # Inject real Swedish HVAC system if supported
+    if use_real_hvac:
+        gross_area = floor_plan.area * floors
+        _inject_swedish_hvac_system(
+            idf_path=idf_path,
+            hvac_selection=hvac_selection,
+            zone_names=zone_names,
+            gross_floor_area=gross_area,
+            building_name=model_name,
+        )
 
     # Calculate heating estimate
     gross_area = floor_plan.area * floors
@@ -2422,8 +2445,89 @@ def _add_enhanced_internal_loads(idf, zone_name, floor_area, archetype, occupanc
     )
 
 
+# Systems that have full HVAC templates (not just IdealLoads)
+REAL_HVAC_SYSTEMS = None  # Will be set after import
+
+
+def _supports_real_hvac(hvac_selection) -> bool:
+    """Check if the HVAC selection supports real system modeling."""
+    global REAL_HVAC_SYSTEMS
+    if REAL_HVAC_SYSTEMS is None:
+        from ..hvac import SwedishHVACSystem
+        REAL_HVAC_SYSTEMS = {
+            SwedishHVACSystem.DISTRICT_HEATING,
+            SwedishHVACSystem.GROUND_SOURCE_HP,
+            SwedishHVACSystem.AIR_SOURCE_HP,
+            SwedishHVACSystem.EXHAUST_AIR_HP,
+        }
+    return hvac_selection.primary_heating in REAL_HVAC_SYSTEMS
+
+
+def _inject_swedish_hvac_system(
+    idf_path: Path,
+    hvac_selection,
+    zone_names: List[str],
+    gross_floor_area: float,
+    building_name: str = "Building",
+) -> None:
+    """
+    Inject real Swedish HVAC system into saved IDF file.
+
+    This replaces IdealLoadsAirSystem with actual Swedish HVAC equipment:
+    - District heating (fjärrvärme) with plant loops
+    - Ground source heat pump (bergvärme) with borehole field
+    - Air source heat pump (luft-vatten)
+    - Exhaust air heat pump (FTX-VP)
+
+    The HVAC IDF string is appended to the saved IDF file.
+
+    Args:
+        idf_path: Path to saved IDF file
+        hvac_selection: HVACSelection with system type and parameters
+        zone_names: List of zone names (e.g., ['Floor1', 'Floor2'])
+        gross_floor_area: Total floor area in m²
+        building_name: Building name for HVAC object naming
+    """
+    from ..hvac import generate_hvac_idf
+
+    # Estimate design heating load (W)
+    # Swedish buildings: ~40-60 W/m² for newer, ~80-100 W/m² for older
+    # Use 60 W/m² as reasonable default
+    design_heating_load_w = gross_floor_area * 60.0
+
+    # Generate HVAC IDF string with real Swedish equipment
+    hvac_idf = generate_hvac_idf(
+        system_type=hvac_selection.primary_heating,
+        zone_names=zone_names,
+        design_heating_load_w=design_heating_load_w,
+        building_name=building_name,
+        supply_temp_c=hvac_selection.supply_temp_c,
+        cop=hvac_selection.hp_cop if hasattr(hvac_selection, 'hp_cop') else None,
+        heat_recovery_eff=hvac_selection.heat_recovery_eff,
+    )
+
+    # Append to IDF file
+    with open(idf_path, 'a') as f:
+        f.write('\n\n')
+        f.write('!- ' + '=' * 70 + '\n')
+        f.write('!- SWEDISH HVAC SYSTEM (Real Equipment)\n')
+        f.write(f'!- System Type: {hvac_selection.primary_heating.value}\n')
+        f.write(f'!- Detected From: {hvac_selection.detected_from}\n')
+        f.write(f'!- Confidence: {hvac_selection.confidence:.0%}\n')
+        f.write('!- ' + '=' * 70 + '\n')
+        f.write(hvac_idf)
+
+    logger.info(f"Injected Swedish HVAC system: {hvac_selection.primary_heating.value}")
+
+
 def _add_enhanced_hvac(idf, zone_name, hvac_selection, occupancy_pattern, newidfobject):
-    """Add HVAC using HVACSelection and occupancy pattern setpoints."""
+    """
+    Add HVAC using HVACSelection and occupancy pattern setpoints.
+
+    NOTE: For systems with real HVAC templates (district heating, heat pumps),
+    this function is SKIPPED and _inject_swedish_hvac_system() is used instead.
+    This function is only used as fallback for unsupported systems.
+    """
     from ..hvac import SwedishHVACSystem, VentilationSystem
 
     hr_eff = hvac_selection.heat_recovery_eff
@@ -2433,9 +2537,8 @@ def _add_enhanced_hvac(idf, zone_name, hvac_selection, occupancy_pattern, newidf
     heat_setpoint = occupancy_pattern.heating_setpoint_occupied_c
     cool_setpoint = occupancy_pattern.cooling_setpoint_c
 
-    # Note: This still uses IdealLoadsAirSystem for now.
-    # Full HVAC system replacement requires complete plant loop modeling.
-    # See generate_hvac_idf() for EnergyPlus HVAC templates when ready.
+    # This uses IdealLoadsAirSystem as fallback for unsupported systems.
+    # For real HVAC, use _inject_swedish_hvac_system() instead.
 
     newidfobject(idf, "ZoneHVAC:IdealLoadsAirSystem",
         Name=f"{zone_name}_IdealLoads",
