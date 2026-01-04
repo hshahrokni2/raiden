@@ -883,14 +883,21 @@ class FullPipelineAnalyzer:
         # Phase 3: Baseline Generation & Calibration
         console.print("\n[bold]Phase 3: Baseline Simulation & Calibration[/bold]")
         calibration_result = None  # Will hold Bayesian result if available
+        baseline_idf = None
+        calibrated_kwh_m2 = fusion.declared_kwh_m2 or 93  # Fallback default
+
         if run_simulations:
-            baseline_idf, calibrated_kwh_m2, calibration_result = self._run_baseline(fusion, geometry, context)
-            console.print(f"  ✓ Calibrated baseline: {calibrated_kwh_m2:.1f} kWh/m²")
-            if calibration_result:
-                console.print(f"  ✓ Uncertainty quantified (Bayesian)")
+            try:
+                baseline_idf, calibrated_kwh_m2, calibration_result = self._run_baseline(fusion, geometry, context)
+                console.print(f"  ✓ Calibrated baseline: {calibrated_kwh_m2:.1f} kWh/m²")
+                if calibration_result:
+                    console.print(f"  ✓ Uncertainty quantified (Bayesian)")
+            except Exception as e:
+                logger.warning(f"Baseline generation/calibration failed: {e}", exc_info=True)
+                console.print(f"  [yellow]⚠ Calibration failed: {e}[/yellow]")
+                console.print(f"  [yellow]Using declared energy: {calibrated_kwh_m2:.1f} kWh/m² (no simulation)[/yellow]")
+                # Continue with declared energy - allows ECM estimation without simulation
         else:
-            baseline_idf = None
-            calibrated_kwh_m2 = fusion.declared_kwh_m2
             console.print(f"  ⊘ Simulations disabled, using declared: {calibrated_kwh_m2} kWh/m²")
 
         # ═══════════════════════════════════════════════════════════════════════
@@ -992,19 +999,33 @@ class FullPipelineAnalyzer:
 
         # Phase 5: ECM Simulations
         console.print("\n[bold]Phase 5: ECM Simulations[/bold]")
-        if run_simulations and baseline_idf:
-            ecm_results = self._run_ecm_simulations(
-                baseline_idf, calibrated_kwh_m2, applicable_ecms, fusion, calibration_result,
-                baseline_energy=baseline_energy,  # Pass energy breakdown for multi-end-use savings
-                heating_scaling_factor=heating_scaling_factor,  # Scale ECM results to match baseline
-            )
-        else:
-            ecm_results = self._estimate_ecm_savings(
-                applicable_ecms, calibrated_kwh_m2, fusion,
-                baseline_energy=baseline_energy  # Pass energy breakdown for multi-end-use savings
-            )
-
-        console.print(f"  ✓ ECMs analyzed: {len(ecm_results)}")
+        ecm_results = []
+        try:
+            if run_simulations and baseline_idf:
+                ecm_results = self._run_ecm_simulations(
+                    baseline_idf, calibrated_kwh_m2, applicable_ecms, fusion, calibration_result,
+                    baseline_energy=baseline_energy,  # Pass energy breakdown for multi-end-use savings
+                    heating_scaling_factor=heating_scaling_factor,  # Scale ECM results to match baseline
+                )
+            else:
+                ecm_results = self._estimate_ecm_savings(
+                    applicable_ecms, calibrated_kwh_m2, fusion,
+                    baseline_energy=baseline_energy  # Pass energy breakdown for multi-end-use savings
+                )
+            console.print(f"  ✓ ECMs analyzed: {len(ecm_results)}")
+        except Exception as e:
+            logger.warning(f"ECM analysis failed: {e}", exc_info=True)
+            console.print(f"  [yellow]⚠ ECM simulation failed: {e}[/yellow]")
+            console.print(f"  [yellow]Falling back to estimation for applicable ECMs[/yellow]")
+            try:
+                ecm_results = self._estimate_ecm_savings(
+                    applicable_ecms, calibrated_kwh_m2, fusion,
+                    baseline_energy=baseline_energy
+                )
+                console.print(f"  ✓ ECMs estimated: {len(ecm_results)}")
+            except Exception as e2:
+                logger.warning(f"ECM estimation also failed: {e2}")
+                console.print(f"  [red]ECM estimation failed: {e2}[/red]")
 
         # Phase 6: Snowball Package Generation
         console.print("\n[bold]Phase 6: Snowball Package Generation[/bold]")
@@ -1158,6 +1179,8 @@ class FullPipelineAnalyzer:
             "total_time_seconds": total_time,
             # Multi-end-use energy breakdown
             "baseline_energy": baseline_energy.to_dict() if baseline_energy else None,
+            # Facade material - expose at top level for easier access
+            "facade_material": fusion.detected_material,
         }
 
         # Add long-term planning results
@@ -3364,6 +3387,7 @@ class FullPipelineAnalyzer:
         calibration_result: Optional[CalibrationResult] = None,
         baseline_energy: Optional[EnergyBreakdown] = None,
         heating_scaling_factor: float = 1.0,
+        parallel_workers: int = 4,
     ) -> List[Dict]:
         """
         Run actual EnergyPlus simulations for each ECM.
@@ -3373,9 +3397,29 @@ class FullPipelineAnalyzer:
 
         IMPORTANT: heating_scaling_factor adjusts ECM results when E+ floor area differs from
         declared Atemp. This ensures ECM heating results are on the same basis as baseline_energy.
+
+        Args:
+            parallel_workers: Number of parallel E+ processes (default 4)
         """
         results = []
         weather_path = self.weather_dir / "stockholm.epw"
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # PARALLEL EXECUTION: Prepare all IDFs first, then run in batch
+        # This significantly speeds up analysis for buildings with many ECMs
+        # ═══════════════════════════════════════════════════════════════════════
+        if parallel_workers > 1 and len(ecms) > 2:
+            console.print(f"  [cyan]Using parallel execution ({parallel_workers} workers, {len(ecms)} ECMs)[/cyan]")
+            return self._run_ecm_simulations_parallel(
+                baseline_idf=baseline_idf,
+                baseline_kwh_m2=baseline_kwh_m2,
+                ecms=ecms,
+                fusion=fusion,
+                calibration_result=calibration_result,
+                baseline_energy=baseline_energy,
+                heating_scaling_factor=heating_scaling_factor,
+                parallel_workers=parallel_workers,
+            )
 
         # Create default baseline_energy if not provided
         if baseline_energy is None:
@@ -3579,6 +3623,309 @@ class FullPipelineAnalyzer:
             })
 
         return results
+
+    def _run_ecm_simulations_parallel(
+        self,
+        baseline_idf: Path,
+        baseline_kwh_m2: float,
+        ecms: List,
+        fusion: DataFusionResult,
+        calibration_result: Optional[CalibrationResult] = None,
+        baseline_energy: Optional[EnergyBreakdown] = None,
+        heating_scaling_factor: float = 1.0,
+        parallel_workers: int = 4,
+    ) -> List[Dict]:
+        """
+        Run EnergyPlus simulations in parallel using ProcessPoolExecutor.
+
+        This method significantly speeds up ECM analysis by:
+        1. Preparing all modified IDFs first (sequential, fast)
+        2. Running all simulations in parallel (CPU-bound, ProcessPoolExecutor)
+        3. Processing results with cost calculation (sequential)
+
+        For 40+ ECMs, this can reduce analysis time from 30+ minutes to ~8-10 minutes
+        on a 4-core machine (parallelism limited by E+ memory usage).
+
+        Args:
+            baseline_idf: Path to baseline IDF file
+            baseline_kwh_m2: Baseline heating consumption (calibrated)
+            ecms: List of ECM objects to simulate
+            fusion: Building data fusion result
+            calibration_result: Optional Bayesian calibration result for uncertainty
+            baseline_energy: Optional multi-end-use baseline breakdown
+            heating_scaling_factor: Scale factor for floor area differences
+            parallel_workers: Number of parallel E+ processes
+
+        Returns:
+            List of ECM result dictionaries
+        """
+        results = []
+        weather_path = self.weather_dir / "stockholm.epw"
+
+        # Create default baseline_energy if not provided
+        if baseline_energy is None:
+            baseline_energy = EnergyBreakdown(
+                heating_kwh_m2=baseline_kwh_m2,
+                dhw_kwh_m2=22.0,
+                property_el_kwh_m2=15.0,
+            )
+
+        # Calculate baseline uncertainty from calibration
+        baseline_std = 0.0
+        if calibration_result and calibration_result.kwh_m2_std:
+            baseline_std = calibration_result.kwh_m2_std
+
+        # Log scaling factor if significant
+        if abs(heating_scaling_factor - 1.0) > 0.01:
+            console.print(f"  [cyan]Applying heating scaling factor: {heating_scaling_factor:.3f}[/cyan]")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # PHASE 1: Prepare all modified IDFs (sequential, fast)
+        # ═══════════════════════════════════════════════════════════════════════
+        console.print(f"  [cyan]Phase 1/3: Preparing {len(ecms)} modified IDFs...[/cyan]")
+
+        idf_paths = []
+        ecm_dirs = []
+        ecm_map = {}  # Map IDF path to ECM for result processing
+
+        for ecm in ecms:
+            ecm_dir = self.output_dir / f"ecm_{ecm.id}"
+            ecm_dir.mkdir(parents=True, exist_ok=True)
+            ecm_dirs.append(ecm_dir)
+
+            try:
+                # Apply ECM modifications to create modified IDF
+                modified_idf = self.idf_modifier.apply_single(
+                    baseline_idf=baseline_idf,
+                    ecm_id=ecm.id,
+                    params={},
+                    output_dir=ecm_dir,
+                )
+                idf_paths.append(modified_idf)
+                ecm_map[str(modified_idf)] = ecm
+            except Exception as e:
+                logger.warning(f"Failed to prepare IDF for ECM {ecm.id}: {e}")
+                # Add fallback result for failed preparation
+                results.append(self._create_fallback_ecm_result(
+                    ecm, baseline_kwh_m2, fusion, baseline_energy
+                ))
+
+        if not idf_paths:
+            console.print("  [yellow]No IDFs prepared successfully, returning fallback results[/yellow]")
+            return results
+
+        console.print(f"  [green]✓ Prepared {len(idf_paths)} IDFs[/green]")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # PHASE 2: Run all simulations in parallel
+        # Uses ProcessPoolExecutor via self.runner.run_batch()
+        # ═══════════════════════════════════════════════════════════════════════
+        console.print(f"  [cyan]Phase 2/3: Running {len(idf_paths)} simulations ({parallel_workers} workers)...[/cyan]")
+
+        # Progress callback for rich output
+        completed_count = [0]
+        def progress_callback(completed: int, total: int):
+            completed_count[0] = completed
+            if completed % 5 == 0 or completed == total:
+                console.print(f"    [dim]Progress: {completed}/{total} simulations[/dim]")
+
+        # Run batch simulations
+        try:
+            sim_results = self.runner.run_batch(
+                idf_paths=idf_paths,
+                weather_path=weather_path,
+                output_base=self.output_dir / "parallel_output",
+                parallel=parallel_workers,
+                progress_callback=progress_callback,
+            )
+            console.print(f"  [green]✓ Completed {len(sim_results)} simulations[/green]")
+        except Exception as e:
+            logger.error(f"Batch simulation failed: {e}")
+            # Return fallback results for all ECMs
+            for ecm in ecms:
+                if not any(r["ecm_id"] == ecm.id for r in results):
+                    results.append(self._create_fallback_ecm_result(
+                        ecm, baseline_kwh_m2, fusion, baseline_energy
+                    ))
+            return results
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # PHASE 3: Process results with cost calculation
+        # ═══════════════════════════════════════════════════════════════════════
+        console.print(f"  [cyan]Phase 3/3: Processing results and calculating costs...[/cyan]")
+
+        successful = 0
+        for idf_path, sim_result in zip(idf_paths, sim_results):
+            ecm = ecm_map.get(str(idf_path))
+            if not ecm:
+                continue
+
+            ecm_dir = self.output_dir / f"ecm_{ecm.id}"
+
+            if sim_result.success:
+                # Parse simulation output
+                parsed = self.results_parser.parse(sim_result.output_dir)
+                if parsed:
+                    successful += 1
+
+                    # Scale ECM heating to same basis as baseline
+                    ecm_heating_kwh_m2 = parsed.heating_kwh_m2 * heating_scaling_factor
+                    savings_pct = (baseline_kwh_m2 - ecm_heating_kwh_m2) / baseline_kwh_m2 * 100
+
+                    # Calculate costs using V2 cost database
+                    quantity = self._get_quantity(ecm.id, fusion)
+                    try:
+                        cost = self.cost_calculator.calculate_ecm_cost(
+                            ecm_id=ecm.id,
+                            quantity=quantity,
+                            floor_area_m2=fusion.atemp_m2,
+                        )
+                        investment = cost.total_after_deductions
+                    except Exception as e:
+                        logger.warning(f"Cost calculation failed for {ecm.id}: {e}")
+                        investment = quantity * 100  # Fallback: 100 SEK/m²
+
+                    # Calculate energy savings (SEK)
+                    annual_savings_kwh = (baseline_kwh_m2 - ecm_heating_kwh_m2) * fusion.atemp_m2
+                    energy_savings_sek = annual_savings_kwh * 0.90  # District heating
+
+                    # Calculate effektavgift savings
+                    peak_reduction_kw = 0.0
+                    effekt_savings_sek = 0.0
+                    if hasattr(self, '_building_peak') and hasattr(self, '_effekt_tariff'):
+                        peak_reduction_kw, effekt_savings_sek = calculate_ecm_peak_savings(
+                            ecm_id=ecm.id,
+                            building_peak=self._building_peak,
+                            tariff=self._effekt_tariff,
+                        )
+
+                    # Calculate multi-end-use savings
+                    result_energy, savings_by_use = calculate_ecm_savings(
+                        ecm_id=ecm.id,
+                        baseline=baseline_energy,
+                        simulated_heating_result=ecm_heating_kwh_m2,
+                    )
+
+                    # Total savings across all end-uses
+                    total_savings_kwh_m2 = baseline_energy.total_kwh_m2 - result_energy.total_kwh_m2
+                    total_savings_pct = (total_savings_kwh_m2 / baseline_energy.total_kwh_m2 * 100) if baseline_energy.total_kwh_m2 > 0 else 0
+
+                    # Additional savings from non-heating end-uses
+                    dhw_savings_kwh = savings_by_use.get("dhw", 0) * fusion.atemp_m2
+                    prop_el_savings_kwh = savings_by_use.get("property_el", 0) * fusion.atemp_m2
+                    dhw_savings_sek = dhw_savings_kwh * 0.90
+                    prop_el_savings_sek = prop_el_savings_kwh * 1.50
+
+                    # Update total savings
+                    total_energy_savings_sek = energy_savings_sek + dhw_savings_sek + prop_el_savings_sek
+                    total_annual_savings_sek = total_energy_savings_sek + effekt_savings_sek
+                    payback = investment / total_annual_savings_sek if total_annual_savings_sek > 0 else 99
+
+                    ecm_result = {
+                        "ecm_id": ecm.id,
+                        "ecm_name": ecm.name,
+                        # Heating-only (scaled)
+                        "heating_kwh_m2": ecm_heating_kwh_m2,
+                        "savings_percent": savings_pct,
+                        # Multi-end-use totals
+                        "total_kwh_m2": result_energy.total_kwh_m2,
+                        "total_savings_percent": total_savings_pct,
+                        "savings_by_end_use": savings_by_use,
+                        # Energy breakdown
+                        "dhw_kwh_m2": result_energy.dhw_kwh_m2,
+                        "property_el_kwh_m2": result_energy.property_el_kwh_m2,
+                        # Costs
+                        "investment_sek": investment,
+                        "annual_savings_sek": total_annual_savings_sek,
+                        "energy_savings_sek": total_energy_savings_sek,
+                        "heating_savings_sek": energy_savings_sek,
+                        "dhw_savings_sek": dhw_savings_sek,
+                        "prop_el_savings_sek": prop_el_savings_sek,
+                        "effekt_savings_sek": effekt_savings_sek,
+                        "peak_reduction_kw": peak_reduction_kw,
+                        "simple_payback_years": payback,
+                        "simulated": True,
+                    }
+
+                    # Add uncertainty fields if Bayesian calibration was used
+                    if baseline_std > 0:
+                        ecm_std = baseline_std
+                        savings_std = math.sqrt(2) * baseline_std
+                        ecm_result["heating_kwh_m2_std"] = ecm_std
+                        ecm_result["savings_std"] = savings_std
+                        savings_kwh = baseline_kwh_m2 - ecm_heating_kwh_m2
+                        ecm_result["savings_kwh_m2_ci_90"] = (
+                            max(0, savings_kwh - 1.645 * savings_std),
+                            savings_kwh + 1.645 * savings_std
+                        )
+
+                    results.append(ecm_result)
+                    continue
+
+            # Simulation failed - add fallback result
+            results.append(self._create_fallback_ecm_result(
+                ecm, baseline_kwh_m2, fusion, baseline_energy
+            ))
+
+        console.print(f"  [green]✓ {successful}/{len(ecms)} ECMs simulated successfully[/green]")
+
+        return results
+
+    def _create_fallback_ecm_result(
+        self,
+        ecm,
+        baseline_kwh_m2: float,
+        fusion: DataFusionResult,
+        baseline_energy: EnergyBreakdown,
+    ) -> Dict:
+        """
+        Create a fallback ECM result when simulation fails.
+
+        Uses typical savings percentage from ECM catalog and estimates costs.
+        """
+        typical_savings = ecm.typical_savings_percent if hasattr(ecm, 'typical_savings_percent') else 5
+
+        # Calculate investment
+        quantity = self._get_quantity(ecm.id, fusion)
+        try:
+            cost = self.cost_calculator.calculate_ecm_cost(
+                ecm_id=ecm.id,
+                quantity=quantity,
+                floor_area_m2=fusion.atemp_m2,
+            )
+            investment = cost.total_after_deductions
+        except Exception:
+            investment = quantity * 100  # Fallback: 100 SEK/m²
+
+        # Estimate annual savings
+        savings_kwh = baseline_kwh_m2 * (typical_savings / 100) * fusion.atemp_m2
+        energy_savings_sek = savings_kwh * 0.90
+
+        # Calculate effektavgift savings
+        peak_reduction_kw = 0.0
+        effekt_savings_sek = 0.0
+        if hasattr(self, '_building_peak') and hasattr(self, '_effekt_tariff'):
+            peak_reduction_kw, effekt_savings_sek = calculate_ecm_peak_savings(
+                ecm_id=ecm.id,
+                building_peak=self._building_peak,
+                tariff=self._effekt_tariff,
+            )
+
+        annual_savings_sek = energy_savings_sek + effekt_savings_sek
+
+        return {
+            "ecm_id": ecm.id,
+            "ecm_name": ecm.name,
+            "heating_kwh_m2": baseline_kwh_m2 * (1 - typical_savings / 100),
+            "savings_percent": typical_savings,
+            "investment_sek": investment,
+            "annual_savings_sek": annual_savings_sek,
+            "energy_savings_sek": energy_savings_sek,
+            "effekt_savings_sek": effekt_savings_sek,
+            "peak_reduction_kw": peak_reduction_kw,
+            "simple_payback_years": investment / annual_savings_sek if annual_savings_sek > 0 else 99,
+            "simulated": False,
+        }
 
     def _estimate_ecm_savings(
         self,

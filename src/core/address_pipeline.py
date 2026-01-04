@@ -1321,7 +1321,10 @@ class AddressPipeline:
             # Update building_data with AI-detected material from full_pipeline
             # This is more accurate than era-based guessing
             detected_material = result.get("facade_material") or result.get("building_context", {}).get("facade_material")
-            if detected_material and detected_material not in ("unknown", "render"):
+            if detected_material and detected_material != "unknown":
+                # Normalize "render" to "plaster" for consistency in reports
+                if detected_material == "render":
+                    detected_material = "plaster"
                 building_data.facade_material = detected_material
                 logger.info(f"Updated facade material from AI detection: {detected_material}")
 
@@ -1641,6 +1644,32 @@ class AddressPipeline:
                 except Exception as e:
                     logger.warning(f"Failed to parse ECM result: {e}")
 
+        # FALLBACK: Create ECMResult objects from maintenance plan when analysis fails
+        # This ensures the report has ECM data even without EnergyPlus simulation
+        if not ecm_results_list and maintenance_plan and hasattr(maintenance_plan, 'ecm_investments'):
+            logger.info("Creating ECM results from maintenance plan (fallback)")
+            for inv in maintenance_plan.ecm_investments:
+                if hasattr(inv, 'ecm_id') and hasattr(inv, 'investment_sek'):
+                    # Calculate approximate savings percent from payback
+                    annual_savings = getattr(inv, 'annual_savings_sek', 0) or 0
+                    # Estimate kWh savings from SEK savings (assuming ~1 SEK/kWh for district heating)
+                    savings_kwh = annual_savings / (building_data.atemp_m2 or 1)
+                    savings_pct = (savings_kwh / baseline_kwh_m2 * 100) if baseline_kwh_m2 > 0 else 0
+
+                    ecm_results_list.append(ECMResult(
+                        id=inv.ecm_id,
+                        name=getattr(inv, 'name', inv.ecm_id.replace('_', ' ').title()),
+                        category="Estimated",  # Mark as estimated since no simulation
+                        baseline_kwh_m2=baseline_kwh_m2,
+                        result_kwh_m2=max(0, baseline_kwh_m2 - savings_kwh),
+                        savings_kwh_m2=savings_kwh,
+                        savings_percent=savings_pct,
+                        estimated_cost_sek=getattr(inv, 'investment_sek', 0),
+                        simple_payback_years=getattr(inv, 'payback_years', 99),
+                    ))
+            if ecm_results_list:
+                logger.info(f"Created {len(ecm_results_list)} ECM results from maintenance plan")
+
         # Extract existing measures from context (convert enum values to strings)
         existing_measures = []
         if analysis_results and "context" in analysis_results:
@@ -1648,6 +1677,39 @@ class AddressPipeline:
             if hasattr(context, "existing_measures") and context.existing_measures:
                 # Convert ExistingMeasure enums to their string values
                 existing_measures = [m.value if hasattr(m, 'value') else str(m) for m in context.existing_measures]
+
+        # FALLBACK: Extract existing measures from building_data if analysis failed
+        # This ensures we show existing measures even when EnergyPlus analysis fails
+        if not existing_measures:
+            logger.info("Extracting existing measures from building_data (fallback)")
+            # Check for FTX/heat recovery ventilation
+            if building_data.has_ftx:
+                existing_measures.append("ftx_system")
+                logger.info("  - Detected FTX system from building_data")
+
+            # Check for heat pumps (specific types)
+            if building_data.ground_source_hp_kwh and building_data.ground_source_hp_kwh > 0:
+                existing_measures.append("heat_pump_ground")
+                logger.info(f"  - Detected ground source HP ({building_data.ground_source_hp_kwh:.0f} kWh)")
+            if building_data.exhaust_air_hp_kwh and building_data.exhaust_air_hp_kwh > 0:
+                existing_measures.append("heat_pump_exhaust")
+                logger.info(f"  - Detected exhaust air HP ({building_data.exhaust_air_hp_kwh:.0f} kWh)")
+            if building_data.air_source_hp_kwh and building_data.air_source_hp_kwh > 0:
+                existing_measures.append("heat_pump_air")
+                logger.info(f"  - Detected air source HP ({building_data.air_source_hp_kwh:.0f} kWh)")
+
+            # Generic heat pump check (if no specific type detected)
+            if building_data.has_heat_pump and not any("heat_pump" in m for m in existing_measures):
+                existing_measures.append("heat_pump_generic")
+                logger.info("  - Detected generic heat pump from building_data")
+
+            # Check for solar
+            if building_data.has_solar:
+                existing_measures.append("solar_pv")
+                logger.info("  - Detected solar PV from building_data")
+
+            if existing_measures:
+                logger.info(f"Fallback detected {len(existing_measures)} existing measures: {existing_measures}")
 
         # Update building_data with correct data sources from fusion
         if analysis_results and "data_fusion" in analysis_results:
@@ -1658,6 +1720,13 @@ class AddressPipeline:
 
         # Get applicable ECM IDs
         applicable_ecm_ids = [e.id for e in ecm_results_list]
+
+        # FALLBACK: If analysis failed but maintenance plan exists, extract ECM IDs from it
+        # This ensures consistency between "Tillämpliga åtgärder" and "Underhållsplan" sections
+        if not applicable_ecm_ids and maintenance_plan and hasattr(maintenance_plan, 'ecm_investments'):
+            applicable_ecm_ids = [inv.ecm_id for inv in maintenance_plan.ecm_investments if hasattr(inv, 'ecm_id')]
+            if applicable_ecm_ids:
+                logger.info(f"Extracted {len(applicable_ecm_ids)} applicable ECM IDs from maintenance plan (fallback)")
 
         # Convert snowball packages to report format
         from ..analysis.package_generator import ECMPackage, ECMPackageItem

@@ -246,6 +246,205 @@ class SupabaseClient:
         )
         return result.data
 
+    # ============================================
+    # Full Analysis Storage
+    # ============================================
+
+    def store_analysis(self, data: dict) -> Optional[str]:
+        """
+        Store complete analysis results from FullPipelineAnalyzer.
+
+        Handles:
+        - Building record (upsert by address)
+        - Baseline simulation results
+        - ECM analysis results (batch)
+        - ECM packages
+        - Analysis report metadata
+
+        Args:
+            data: Dict with keys:
+                - address, construction_year, atemp_m2, energy_class, etc.
+                - baseline_kwh_m2, calibration_gap
+                - ecm_results: List of ECM dicts
+                - packages: List of package dicts
+                - data_sources, confidence
+
+        Returns:
+            Building ID (UUID) or None on error
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            # 1. Upsert building record
+            building_data = {
+                "address": data.get("address"),
+                "construction_year": data.get("construction_year"),
+                "heated_area_m2": data.get("atemp_m2"),
+                "energy_class": data.get("energy_class"),
+                "heating_system": data.get("heating_system"),
+                "ventilation_system": data.get("ventilation_system"),
+                "facade_material": data.get("facade_material"),
+                "num_floors": data.get("num_floors"),
+                "num_apartments": data.get("num_apartments"),
+                "declared_energy_kwh_m2": data.get("declared_energy_kwh_m2"),
+                "data_sources": data.get("data_sources"),
+                "data_confidence": data.get("confidence"),
+            }
+            # Remove None values
+            building_data = {k: v for k, v in building_data.items() if v is not None}
+
+            # Check if building exists
+            existing = self.get_building_by_address(data.get("address", ""))
+            if existing:
+                building_id = existing["id"]
+                self.update_building(building_id, building_data)
+                logger.info(f"Updated existing building: {building_id}")
+            else:
+                result = self.insert_building(building_data)
+                building_id = result["id"] if result else None
+                logger.info(f"Created new building: {building_id}")
+
+            if not building_id:
+                return None
+
+            # 2. Store baseline simulation
+            baseline_data = {
+                "building_id": building_id,
+                "archetype_id": data.get("archetype_id"),
+                "heating_kwh_m2": data.get("baseline_kwh_m2"),
+                "calibration_gap": data.get("calibration_gap"),
+                "calibrated_infiltration": data.get("calibrated_infiltration"),
+                "calibrated_heat_recovery": data.get("calibrated_heat_recovery"),
+                "calibrated_window_u": data.get("calibrated_window_u"),
+            }
+            baseline_data = {k: v for k, v in baseline_data.items() if v is not None}
+            if len(baseline_data) > 1:  # More than just building_id
+                self.insert_baseline(baseline_data)
+
+            # 3. Store ECM results (batch)
+            ecm_results = data.get("ecm_results", [])
+            if ecm_results:
+                ecm_records = []
+                for ecm in ecm_results:
+                    ecm_record = {
+                        "building_id": building_id,
+                        "ecm_id": ecm.get("ecm_id"),
+                        "ecm_name": ecm.get("ecm_name"),
+                        "ecm_category": ecm.get("category"),  # Schema uses ecm_category
+                        "is_applicable": ecm.get("is_applicable", True),
+                        "baseline_kwh_m2": ecm.get("baseline_kwh_m2"),
+                        "heating_kwh_m2": ecm.get("heating_kwh_m2"),  # Primary column in schema
+                        "result_kwh_m2": ecm.get("result_kwh_m2") or ecm.get("heating_kwh_m2"),
+                        "savings_kwh_m2": ecm.get("savings_kwh_m2"),
+                        "savings_percent": ecm.get("savings_percent"),
+                        "heating_savings_percent": ecm.get("savings_percent"),  # Schema column
+                        "investment_sek": ecm.get("investment_sek"),
+                        "net_cost": ecm.get("investment_sek"),  # Schema uses net_cost
+                        "annual_savings_sek": ecm.get("annual_savings_sek"),
+                        "simple_payback_years": ecm.get("simple_payback_years"),
+                        "simulated": ecm.get("simulated", False),
+                    }
+                    ecm_record = {k: v for k, v in ecm_record.items() if v is not None}
+                    ecm_records.append(ecm_record)
+
+                if ecm_records:
+                    self.insert_ecm_results_batch(ecm_records)
+                    logger.info(f"Stored {len(ecm_records)} ECM results")
+
+            # 4. Store packages
+            packages = data.get("packages", [])
+            for pkg in packages:
+                package_data = {
+                    "building_id": building_id,
+                    "package_name": pkg.get("name") or pkg.get("package_name"),
+                    "package_type": pkg.get("package_type"),  # basic, standard, premium
+                    "ecm_ids": pkg.get("ecm_ids"),
+                    "combined_heating_kwh_m2": pkg.get("combined_kwh_m2"),  # Schema column
+                    "combined_savings_kwh_m2": pkg.get("combined_kwh_m2"),  # Alias
+                    "combined_savings_percent": pkg.get("savings_percent"),
+                    "total_cost": pkg.get("total_investment_sek"),  # Schema uses total_cost
+                    "net_cost": pkg.get("total_investment_sek"),  # After deductions
+                    "annual_savings_sek": pkg.get("annual_savings_sek"),
+                    "simple_payback_years": pkg.get("simple_payback_years"),
+                }
+                package_data = {k: v for k, v in package_data.items() if v is not None}
+                self.insert_package(package_data)
+
+            logger.info(f"Analysis stored successfully for building {building_id}")
+            return building_id
+
+        except Exception as e:
+            logger.error(f"Failed to store analysis: {e}")
+            raise
+
+    def store_portfolio_result(self, portfolio_id: str, building_result: dict) -> Optional[str]:
+        """
+        Store a single building result within a portfolio analysis.
+
+        Args:
+            portfolio_id: UUID of the portfolio
+            building_result: Dict with building analysis data including:
+                - tier: Analysis tier (skip, fast, standard, deep)
+                - confidence: Overall confidence score
+                - baseline_kwh_m2: Baseline energy consumption
+                - savings_kwh_m2: Estimated savings
+                - savings_percent: Savings as percentage
+                - investment_sek: Total investment
+                - payback_years: Simple payback
+                - archetype_id: Matched archetype
+                - qc_triggers: List of QC triggers if any
+
+        Returns:
+            Portfolio-building junction record ID
+        """
+        try:
+            # First store the building analysis
+            building_id = self.store_analysis(building_result)
+            if not building_id:
+                return None
+
+            # Link to portfolio with full result data
+            junction_data = {
+                "portfolio_id": portfolio_id,
+                "building_id": building_id,
+                "tier": building_result.get("tier", "standard"),  # Schema column
+                "analysis_status": "completed",
+                # Results
+                "baseline_kwh_m2": building_result.get("baseline_kwh_m2"),
+                "savings_kwh_m2": building_result.get("savings_kwh_m2"),
+                "savings_percent": building_result.get("savings_percent"),
+                "investment_sek": building_result.get("investment_sek"),
+                "payback_years": building_result.get("payback_years"),
+                "npv_sek": building_result.get("npv_sek"),
+                # Archetype
+                "archetype_id": building_result.get("archetype_id"),
+                "archetype_confidence": building_result.get("confidence"),
+                # QC
+                "needs_qc": bool(building_result.get("qc_triggers")),
+                "qc_triggers": building_result.get("qc_triggers"),
+                # Recommended ECMs
+                "recommended_ecms": building_result.get("ecm_results", [])[:10],  # Top 10
+                # Uncertainty
+                "savings_uncertainty_kwh_m2": building_result.get("savings_std"),
+                "savings_ci_90_lower": building_result.get("savings_ci_90", (None, None))[0] if building_result.get("savings_ci_90") else None,
+                "savings_ci_90_upper": building_result.get("savings_ci_90", (None, None))[1] if building_result.get("savings_ci_90") else None,
+            }
+            # Remove None values
+            junction_data = {k: v for k, v in junction_data.items() if v is not None}
+
+            result = (
+                self.client.table("portfolio_buildings")
+                .insert(junction_data)
+                .execute()
+            )
+            return result.data[0]["id"] if result.data else None
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to store portfolio result: {e}")
+            return None
+
 
 @lru_cache(maxsize=1)
 def get_client() -> SupabaseClient:

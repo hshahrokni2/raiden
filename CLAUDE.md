@@ -1290,3 +1290,98 @@ We have actual data from:
 - Google Solar API → real roof analysis
 
 The archetype matcher scores based on this REAL DATA, not guesswork.
+
+---
+
+## 🚀 RAIDEN 2026 ROADMAP (Active Development)
+
+> **Full Details:** See [`docs/RAIDEN_2026_ROADMAP.md`](docs/RAIDEN_2026_ROADMAP.md)
+
+### Current Focus: Phase 1-3 (Jan 2026)
+
+#### Phase 1: Realistic HVAC Systems (P0 - CRITICAL)
+
+**Problem:** All buildings use `IdealLoadsAirSystem` - no actual equipment modeling.
+
+**Solution:** Swedish HVAC templates with real equipment:
+- District heating (fjärrvärme) - 70% of MFH
+- Heat pumps (GSHP, ASHP, FTX-VP) with real COPs
+- Auto-select from Gripen/GeoJSON heating data
+
+**Files:**
+- `src/hvac/__init__.py` - Module
+- `src/hvac/swedish_systems.py` - HVAC templates
+- `src/hvac/hvac_selector.py` - Auto-selection from data
+
+**Status:** 🔄 IN PROGRESS
+
+#### Phase 2: Learned Occupancy Patterns (P1 - HIGH IMPACT)
+
+**Problem:** Fixed Sveby schedules for all buildings (same pattern regardless of type).
+
+**Solution:** Building-specific schedules:
+- Residential variants (families, elderly, students)
+- Commercial patterns (retail, restaurant, office)
+- Swedish seasonal variation (summer holidays!)
+
+**Files:**
+- `src/schedules/__init__.py` - Module
+- `src/schedules/swedish_patterns.py` - Pattern library
+- `src/schedules/schedule_generator.py` - IDF generation
+
+**Status:** 🔄 IN PROGRESS
+
+#### Phase 3: Calibration Enhancement (P1 - QUICK WINS)
+
+**Problem:** Suboptimal calibration (80 samples, no validation, no ASHRAE metrics).
+
+**Solution:**
+- Increase samples: 80 → 200
+- Add train/test split (detect overfitting)
+- ASHRAE Guideline 14 metrics (NMBE, CVRMSE)
+- Context-aware priors (FTX detected → tight HR prior)
+
+**Files:**
+- `src/calibration/ashrae_metrics.py` - ASHRAE compliance
+- Updated `src/calibration/surrogate.py` - Train/test split
+
+**Status:** 🔄 IN PROGRESS
+
+### Module Status (Updated 2026-01-03)
+
+| Module | Status | Notes |
+|--------|--------|-------|
+| `src/hvac/` | 🔄 NEW | Swedish HVAC system templates |
+| `src/schedules/` | 🔄 NEW | Occupancy pattern library |
+| `src/calibration/` | 🔄 ENHANCING | ASHRAE metrics, better surrogates |
+| `src/baseline/generator_v2.py` | 🔄 ENHANCING | Wiring realistic HVAC |
+
+### Quick Commands
+
+```bash
+# Run tests for new modules
+python -m pytest tests/test_hvac.py -v
+python -m pytest tests/test_schedules.py -v
+python -m pytest tests/test_calibration.py -v
+
+# Check ASHRAE compliance
+python -c "from src.calibration.ashrae_metrics import calculate_ashrae_metrics; print('OK')"
+```
+
+---
+
+## SESSION CONTINUITY
+
+When starting a new session, read these files first:
+1. `CLAUDE.md` - This file (project overview)
+2. `docs/RAIDEN_2026_ROADMAP.md` - Detailed implementation plan
+3. `docs/BATTLE_PLAN.md` - Development history and decisions
+4. Check TODO list with `/todos` command
+
+### Current Implementation State (Last Updated: 2026-01-03)
+
+```
+PHASE 1 (HVAC):        [░░░░░░░░░░] 0% - Starting
+PHASE 2 (SCHEDULES):   [░░░░░░░░░░] 0% - Starting
+PHASE 3 (CALIBRATION): [░░░░░░░░░░] 0% - Starting
+```

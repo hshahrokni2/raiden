@@ -59,6 +59,21 @@ from .sensitivity import (
     AdaptiveCalibration,
 )
 
+# 2026 Roadmap: Advanced calibration methods (stubs)
+from .abc_smc import (
+    ABCSMCConfig,
+    ABCSMCPosterior,
+    ABCSMCDirectCalibrator,
+    run_abc_smc_calibration,
+)
+from .hybrid import (
+    HybridConfig,
+    HybridCalibrationResult,
+    HybridCalibrator,
+    run_hybrid_calibration,
+    recommend_calibration_method,
+)
+
 __all__ = [
     # Surrogate
     "SurrogateConfig",
@@ -91,4 +106,15 @@ __all__ = [
     "MorrisScreening",
     "run_morris_analysis",
     "AdaptiveCalibration",
+    # 2026 Roadmap: ABC-SMC (stub)
+    "ABCSMCConfig",
+    "ABCSMCPosterior",
+    "ABCSMCDirectCalibrator",
+    "run_abc_smc_calibration",
+    # 2026 Roadmap: Hybrid calibration (stub)
+    "HybridConfig",
+    "HybridCalibrationResult",
+    "HybridCalibrator",
+    "run_hybrid_calibration",
+    "recommend_calibration_method",
 ]

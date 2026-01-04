@@ -164,6 +164,28 @@ class BaselineCalibrator:
         logger.info(f"Initial heating: {initial_kwh_m2:.1f} kWh/m²")
         logger.info(f"Target: {measured_heating_kwh_m2:.1f} kWh/m²")
 
+        # Handle heat pump buildings where space heating target is 0 or very small
+        if measured_heating_kwh_m2 <= 1.0:
+            logger.warning(
+                f"Space heating target is {measured_heating_kwh_m2:.1f} kWh/m² - "
+                "building likely has heat pump providing all heating. "
+                "Skipping iterative calibration."
+            )
+            calibrated_idf = output_dir / f"{idf_path.stem}_calibrated.idf"
+            shutil.copy(idf_path, calibrated_idf)
+            return CalibrationResult(
+                success=True,
+                iterations=0,
+                final_error_percent=0.0,  # Can't calculate error when target is 0
+                adjusted_infiltration_ach=current_params['infiltration'],
+                adjusted_heat_recovery=current_params['heat_recovery'],
+                adjusted_window_u=current_params['window_u'],
+                measured_kwh_m2=measured_heating_kwh_m2,
+                initial_kwh_m2=initial_kwh_m2,
+                calibrated_kwh_m2=initial_kwh_m2,  # Use initial (archetype defaults)
+                calibrated_idf_path=calibrated_idf,
+            )
+
         error_pct = (initial_kwh_m2 - measured_heating_kwh_m2) / measured_heating_kwh_m2
         logger.info(f"Initial error: {error_pct:+.1%}")
 

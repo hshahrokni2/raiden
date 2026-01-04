@@ -753,3 +753,219 @@ class Building3DGenerator:
     </script>
 </body>
 </html>'''
+
+    def generate(
+        self,
+        footprint: dict | list,
+        height_m: float,
+        floors: int = 1,
+        facade_material: str = "concrete",
+        wwr: dict = None,
+        roof_type: str = "flat",
+        has_solar: bool = False,
+        address: str = "",
+        energy_class: str = "D",
+    ) -> "Building3DModel":
+        """
+        Generate a 3D model from raw building parameters.
+
+        This is a simpler API than generate_scene() that works with
+        raw parameters instead of BRFProperty objects.
+
+        Args:
+            footprint: GeoJSON footprint or list of coordinates
+            height_m: Building height in meters
+            floors: Number of floors
+            facade_material: Material type (concrete, brick, plaster, etc.)
+            wwr: Window-to-wall ratios by direction
+            roof_type: Roof type (flat, gable, hip)
+            has_solar: Whether building has solar panels
+            address: Building address
+            energy_class: Energy class (A-G)
+
+        Returns:
+            Building3DModel that can be exported
+        """
+        # Extract coordinates from GeoJSON if needed
+        coords = self._extract_footprint_coords(footprint)
+        if not coords:
+            raise ValueError("Could not extract footprint coordinates")
+
+        # Convert to local coordinates (center at origin)
+        center_x = sum(c[0] for c in coords) / len(coords)
+        center_y = sum(c[1] for c in coords) / len(coords)
+        local_coords = [(x - center_x, y - center_y) for x, y in coords]
+
+        # Get color based on material
+        material_map = {
+            "brick": 0xB5651D,
+            "concrete": 0x808080,
+            "plaster": 0xFFF8DC,
+            "render": 0xFFF8DC,
+            "glass": 0x87CEEB,
+            "metal": 0xC0C0C0,
+            "wood": 0xDEB887,
+            "stone": 0x696969,
+        }
+        color = material_map.get(facade_material.lower(), 0xCCCCCC)
+
+        # Create mesh data
+        mesh_data = self._create_extruded_mesh(local_coords, height_m)
+
+        # Build scene data
+        scene_data = {
+            "metadata": {
+                "brf_name": address or "Building",
+                "generator": "raiden-energy-toolkit",
+                "version": "1.0.0",
+            },
+            "buildings": [{
+                "id": "main",
+                "name": address or "Building",
+                "address": address,
+                "height": height_m,
+                "floors": floors,
+                "energy_class": energy_class,
+                "color": color,
+                "geometry": mesh_data,
+                "properties": {
+                    "facade_material": facade_material,
+                    "wwr": wwr or {},
+                    "roof_type": roof_type,
+                    "has_solar": has_solar,
+                },
+            }],
+            "ground": self._generate_ground(100),
+            "camera": self._generate_camera(height_m, 100),
+            "lights": self._generate_lights(),
+        }
+
+        return Building3DModel(scene_data, self)
+
+    def _extract_footprint_coords(self, footprint: dict | list) -> list:
+        """Extract coordinate list from various footprint formats."""
+        if isinstance(footprint, list):
+            # Already a list of coordinates
+            if footprint and isinstance(footprint[0], (list, tuple)):
+                return [(c[0], c[1]) for c in footprint]
+            return footprint
+
+        if isinstance(footprint, dict):
+            # GeoJSON format
+            if "coordinates" in footprint:
+                coords = footprint["coordinates"]
+                # Handle Polygon type
+                if footprint.get("type") == "Polygon":
+                    coords = coords[0]  # Outer ring
+                return [(c[0], c[1]) for c in coords]
+
+            # FeatureCollection or Feature
+            if "features" in footprint:
+                for feature in footprint["features"]:
+                    geom = feature.get("geometry", {})
+                    if geom.get("type") == "Polygon":
+                        return [(c[0], c[1]) for c in geom["coordinates"][0]]
+
+            if "geometry" in footprint:
+                geom = footprint["geometry"]
+                if geom.get("type") == "Polygon":
+                    return [(c[0], c[1]) for c in geom["coordinates"][0]]
+
+        return []
+
+
+class Building3DModel:
+    """
+    A 3D building model that can be exported to various formats.
+
+    Supports:
+    - GLB (GL Transmission Format Binary)
+    - GLTF (GL Transmission Format)
+    - HTML (Interactive viewer)
+    - JSON (Raw scene data)
+    """
+
+    def __init__(self, scene_data: dict, generator: Building3DGenerator):
+        self.scene_data = scene_data
+        self.generator = generator
+
+    def export(self, path: str | Path) -> None:
+        """
+        Export the 3D model to a file.
+
+        Format is determined by file extension:
+        - .glb, .gltf: GLB/GLTF format (requires trimesh)
+        - .html: Interactive HTML viewer
+        - .json: Raw scene data
+
+        Args:
+            path: Output file path
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        suffix = path.suffix.lower()
+
+        if suffix in (".glb", ".gltf"):
+            self._export_gltf(path)
+        elif suffix == ".html":
+            self.generator.generate_html_viewer(self.scene_data, path)
+        elif suffix == ".json":
+            self.generator.save_scene(self.scene_data, path)
+        else:
+            # Default to HTML
+            self.generator.generate_html_viewer(self.scene_data, path.with_suffix(".html"))
+
+    def _export_gltf(self, path: Path) -> None:
+        """Export to GLTF/GLB format."""
+        try:
+            import trimesh
+            import numpy as np
+        except ImportError:
+            # Fallback to HTML if trimesh not available
+            import logging
+            logging.getLogger(__name__).warning(
+                "trimesh not installed, falling back to HTML export"
+            )
+            self.generator.generate_html_viewer(
+                self.scene_data,
+                path.with_suffix(".html")
+            )
+            return
+
+        # Create a scene with all buildings
+        scene = trimesh.Scene()
+
+        for building in self.scene_data.get("buildings", []):
+            geom = building.get("geometry", {})
+
+            # Get wall vertices and indices
+            wall_verts = geom.get("wall_vertices", [])
+            wall_indices = geom.get("wall_indices", [])
+
+            if wall_verts and wall_indices:
+                # Reshape vertices to Nx3
+                vertices = np.array(wall_verts).reshape(-1, 3)
+                faces = np.array(wall_indices).reshape(-1, 3)
+
+                # Create mesh
+                mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+
+                # Apply color
+                color = building.get("color", 0xCCCCCC)
+                r = ((color >> 16) & 0xFF) / 255.0
+                g = ((color >> 8) & 0xFF) / 255.0
+                b = (color & 0xFF) / 255.0
+                mesh.visual.face_colors = [r, g, b, 1.0]
+
+                scene.add_geometry(mesh, node_name=building.get("id", "building"))
+
+        # Export
+        if path.suffix == ".glb":
+            scene.export(str(path), file_type="glb")
+        else:
+            scene.export(str(path), file_type="gltf")
+
+    def to_dict(self) -> dict:
+        """Return raw scene data."""
+        return self.scene_data

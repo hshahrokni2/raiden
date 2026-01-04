@@ -19,6 +19,9 @@ Examples:
     # Full analysis with 36 images, LLM reasoning, Bayesian calibration (RECOMMENDED!)
     raiden full-analysis "Aktergatan 11, Stockholm" --bayesian --simulate
 
+    # Full analysis with hybrid calibration (surrogate + E+ verification for >10 MSEK)
+    raiden full-analysis "Aktergatan 11, Stockholm" --calibration-method hybrid
+
     # Portfolio analysis
     raiden portfolio buildings.csv --output ./reports --workers 50
     raiden portfolio-hybrid buildings.csv --validate-top-percent 10
@@ -1069,6 +1072,10 @@ Examples:
     portfolio_parser.add_argument('--workers', '-w', type=int, default=50, help='Number of parallel workers')
     portfolio_parser.add_argument('--skip-classes', help='Comma-separated energy classes to skip (default: A,B)')
     portfolio_parser.add_argument('--skip-simulation', action='store_true', help='Skip EnergyPlus simulation')
+    portfolio_parser.add_argument('--calibration-method', '-cm',
+                                  choices=['surrogate', 'hybrid', 'abc'],
+                                  default='surrogate',
+                                  help='Calibration method for deep analysis tier')
 
     # Hybrid Portfolio command (RECOMMENDED FOR LARGE PORTFOLIOS!)
     hybrid_parser = subparsers.add_parser('portfolio-hybrid',
@@ -1096,6 +1103,10 @@ Examples:
     full_parser.add_argument('--simulate', action='store_true', default=True, help='Run EnergyPlus simulation (default: True)')
     full_parser.add_argument('--no-simulate', dest='simulate', action='store_false', help='Skip EnergyPlus simulation')
     full_parser.add_argument('--bayesian', action='store_true', help='Use Bayesian calibration (default: simple)')
+    full_parser.add_argument('--calibration-method', '-cm',
+                             choices=['surrogate', 'hybrid', 'abc'],
+                             default='surrogate',
+                             help='Calibration method: surrogate (fast), hybrid (surrogate+E+ verify), abc (full ABC-SMC)')
     full_parser.add_argument('--no-streetview', action='store_true', help='Skip Street View facade analysis')
     full_parser.add_argument('--no-llm', action='store_true', help='Skip LLM reasoning')
     full_parser.add_argument('--store-db', action='store_true', help='Store results to Supabase')

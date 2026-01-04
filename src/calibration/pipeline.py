@@ -82,6 +82,11 @@ class CalibrationResult:
     calibrated_param_list: Optional[List[str]] = None  # Parameters that were calibrated
     fixed_param_values: Optional[Dict[str, float]] = None  # Parameters fixed at defaults
 
+    # E+ Verification (ground truth check)
+    eplus_verified: bool = False  # Whether E+ verification was run
+    eplus_verified_kwh_m2: float = 0.0  # Actual E+ result with calibrated params
+    surrogate_eplus_discrepancy: float = 0.0  # |surrogate - eplus| / eplus
+
     def to_dict(self) -> Dict[str, Any]:
         """Export to dictionary for JSON serialization."""
         return {
@@ -113,6 +118,10 @@ class CalibrationResult:
             "morris_ranking": self.morris_results.ranking if self.morris_results else None,
             "calibrated_param_list": self.calibrated_param_list,
             "fixed_param_values": self.fixed_param_values,
+            # E+ verification
+            "eplus_verified": self.eplus_verified,
+            "eplus_verified_kwh_m2": self.eplus_verified_kwh_m2,
+            "surrogate_eplus_discrepancy": self.surrogate_eplus_discrepancy,
         }
 
 
@@ -128,13 +137,14 @@ class BayesianCalibrationPipeline:
         runner,  # EnergyPlusRunner or SimulationRunner
         weather_path: Path,
         cache_dir: Path = None,
-        n_surrogate_samples: int = 100,
+        n_surrogate_samples: int = 200,  # Increased from 100 (literature: 10-20 per parameter)
         n_abc_particles: int = 500,
         n_abc_generations: int = 8,
         parallel_sims: int = 4,
         use_adaptive_calibration: bool = True,  # Use Morris screening
         min_calibration_params: int = 3,
         max_calibration_params: int = 5,
+        verify_with_eplus: bool = False,  # Run final E+ verification after calibration
     ):
         """
         Initialize calibration pipeline.
@@ -150,6 +160,7 @@ class BayesianCalibrationPipeline:
             use_adaptive_calibration: Use Morris screening to focus on important params
             min_calibration_params: Minimum parameters to calibrate (adaptive mode)
             max_calibration_params: Maximum parameters to calibrate (adaptive mode)
+            verify_with_eplus: Run final E+ simulation with calibrated params to verify surrogate accuracy
         """
         self.runner = runner
         self.weather_path = Path(weather_path)
@@ -161,6 +172,7 @@ class BayesianCalibrationPipeline:
         self.use_adaptive_calibration = use_adaptive_calibration
         self.min_calibration_params = min_calibration_params
         self.max_calibration_params = max_calibration_params
+        self.verify_with_eplus = verify_with_eplus
 
         # Cached surrogates and Morris results
         self._surrogates: Dict[str, TrainedSurrogate] = {}
@@ -315,6 +327,36 @@ class BayesianCalibrationPipeline:
             simulated_std=pred_std,
         )
 
+        # Optional: Run final E+ verification with calibrated parameters
+        eplus_verified = False
+        eplus_verified_kwh_m2 = 0.0
+        surrogate_eplus_discrepancy = 0.0
+
+        if self.verify_with_eplus and baseline_idf and output_dir:
+            logger.info("Running E+ verification with calibrated parameters...")
+            try:
+                eplus_result = self._run_eplus_verification(
+                    baseline_idf=baseline_idf,
+                    calibrated_params=posterior.means,
+                    output_dir=output_dir,
+                    atemp_m2=atemp_m2,
+                )
+                if eplus_result is not None:
+                    eplus_verified = True
+                    eplus_verified_kwh_m2 = eplus_result
+                    surrogate_eplus_discrepancy = abs(pred_mean - eplus_result) / eplus_result if eplus_result > 0 else 0
+
+                    logger.info(f"E+ Verification: {eplus_result:.1f} kWh/m² (surrogate: {pred_mean:.1f})")
+                    if surrogate_eplus_discrepancy > 0.10:
+                        logger.warning(
+                            f"⚠️ Surrogate-E+ discrepancy: {surrogate_eplus_discrepancy:.1%} "
+                            f"(exceeds 10% threshold). Consider retraining surrogate."
+                        )
+                    else:
+                        logger.info(f"✓ Surrogate-E+ discrepancy: {surrogate_eplus_discrepancy:.1%} (OK)")
+            except Exception as e:
+                logger.warning(f"E+ verification failed: {e}")
+
         # Build result
         result = CalibrationResult(
             calibrated_kwh_m2=pred_mean,
@@ -340,6 +382,10 @@ class BayesianCalibrationPipeline:
             morris_results=morris_results,
             calibrated_param_list=calibrated_params,
             fixed_param_values=fixed_params,
+            # E+ verification
+            eplus_verified=eplus_verified,
+            eplus_verified_kwh_m2=eplus_verified_kwh_m2,
+            surrogate_eplus_discrepancy=surrogate_eplus_discrepancy,
         )
 
         # Log ASHRAE compliance
@@ -630,6 +676,68 @@ class BayesianCalibrationPipeline:
             })
 
         return defaults.get(param_name, 0.5)
+
+    def _run_eplus_verification(
+        self,
+        baseline_idf: Path,
+        calibrated_params: Dict[str, float],
+        output_dir: Path,
+        atemp_m2: float,
+    ) -> Optional[float]:
+        """
+        Run E+ simulation with calibrated parameters to verify surrogate accuracy.
+
+        This is the ground-truth check recommended by Chong & Menberg (2018).
+        After surrogate-based calibration, running actual E+ confirms the
+        surrogate was accurate in the region of interest.
+
+        Args:
+            baseline_idf: Path to baseline IDF
+            calibrated_params: MAP parameters from calibration
+            output_dir: Directory for verification run
+            atemp_m2: Heated floor area for normalization
+
+        Returns:
+            Verified heating_kwh_m2 from actual E+ run, or None on failure
+        """
+        import shutil
+
+        try:
+            # Create verification directory
+            verify_dir = Path(output_dir) / "eplus_verification"
+            verify_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copy and modify IDF
+            modified_idf = verify_dir / "verified_model.idf"
+            shutil.copy(baseline_idf, modified_idf)
+
+            # Apply calibrated parameters
+            self._apply_params_to_idf(modified_idf, calibrated_params)
+
+            # Run E+ simulation
+            sim_result = self.runner.run(
+                idf_path=modified_idf,
+                weather_path=self.weather_path,
+                output_dir=verify_dir,
+            )
+
+            if sim_result and sim_result.success:
+                # Parse results
+                from ..simulation.results import ResultsParser
+                parser = ResultsParser()
+                parsed = parser.parse(verify_dir)
+
+                if parsed and parsed.heating_kwh_m2 > 0:
+                    return parsed.heating_kwh_m2
+                elif parsed and parsed.heating_kwh > 0 and atemp_m2 > 0:
+                    return parsed.heating_kwh / atemp_m2
+
+            logger.warning("E+ verification simulation did not produce valid results")
+            return None
+
+        except Exception as e:
+            logger.error(f"E+ verification failed: {e}")
+            return None
 
     def compute_ecm_savings_with_uncertainty(
         self,
