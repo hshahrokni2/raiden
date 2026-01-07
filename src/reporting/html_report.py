@@ -29,6 +29,7 @@ class ECMResult:
     """Result for a single ECM."""
     id: str
     name: str
+    name_sv: str  # Swedish name for display
     category: str
     baseline_kwh_m2: float
     result_kwh_m2: float
@@ -92,6 +93,68 @@ class RenovationHistoryData:
     energy_class_improvement: int = 0  # Positive = improved (e.g., F→C = 3)
     kwh_reduction_percent: float = 0
     declarations: List[Dict] = field(default_factory=list)  # All historical declarations
+
+
+@dataclass
+class CalibrationAnomalyData:
+    """Single calibration anomaly for report display."""
+    parameter: str  # e.g., "window_u_value"
+    parameter_name_sv: str  # e.g., "Fönster U-värde"
+    expected: float
+    calibrated: float
+    deviation_percent: float
+    severity: str  # "low", "medium", "high"
+    is_worse: bool  # True if worse than expected
+    explanation_sv: str  # Swedish explanation
+    recommendation_sv: str  # Swedish recommendation
+    impacts_ecm: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CalibrationAnomaliesData:
+    """Calibration anomalies section for report."""
+    has_anomalies: bool = False
+    anomalies: List[CalibrationAnomalyData] = field(default_factory=list)
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    requires_investigation: bool = False
+    summary_sv: str = ""
+    quality_flags: List[str] = field(default_factory=list)
+    ecm_priorities_changed: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ClarificationQuestionData:
+    """Single clarification question for report display."""
+    id: str
+    question_sv: str
+    question_type: str  # "multiple_choice", "numeric", "yes_no", "text"
+    priority: str  # "high", "medium", "low"
+    category: str  # "building_data", "energy_data", etc.
+    options: List[Dict[str, str]] = field(default_factory=list)  # For multiple choice
+    default_value: Any = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    unit: str = ""
+    impact_description_sv: str = ""
+    confidence_current: float = 0.5
+    confidence_if_answered: float = 0.9
+    affected_components: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ClarificationSetData:
+    """Clarification questions section for report."""
+    analysis_id: str = ""
+    has_questions: bool = False
+    questions: List[ClarificationQuestionData] = field(default_factory=list)
+    high_priority_count: int = 0
+    medium_priority_count: int = 0
+    low_priority_count: int = 0
+    total_confidence_gain: float = 0.0  # Average confidence gain if all answered
+    version: int = 1
+    reassessment_endpoint: str = ""  # API endpoint for submitting answers
 
 
 @dataclass
@@ -168,6 +231,12 @@ class ReportData:
     building_complexity_score: float = 0  # 0-100
     building_complexity_warning: str = ""  # Warning if complex geometry
     single_zone_adequate: bool = True  # Whether single-zone model is adequate
+
+    # Calibration anomalies (from Agentic Raiden)
+    calibration_anomalies: CalibrationAnomaliesData = None
+
+    # Clarification questions (for iterative improvement)
+    clarification_questions: ClarificationSetData = None
 
 
 HTML_TEMPLATE = '''<!DOCTYPE html>
@@ -702,6 +771,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
             {maintenance_plan_section}
 
+            {clarification_section}
+
             <section>
                 <h2>Sammanfattning</h2>
                 <div class="recommendation">
@@ -795,6 +866,9 @@ class HTMLReportGenerator:
         # Generate complexity section
         complexity_section = self._format_complexity_section(data)
 
+        # Generate clarification questions section (for iterative improvement)
+        clarification_section = self._format_clarification_section(data)
+
         # Format HTML
         html = HTML_TEMPLATE.format(
             building_name=data.building_name,
@@ -818,6 +892,7 @@ class HTMLReportGenerator:
             effektvakt_section=effektvakt_section,
             renovation_history_section=renovation_history_section,
             maintenance_plan_section=maintenance_plan_section,
+            clarification_section=clarification_section,
             recommendation_text=recommendation,
             analysis_date=data.analysis_date or datetime.now().strftime("%Y-%m-%d %H:%M"),
         )
@@ -868,8 +943,10 @@ class HTMLReportGenerator:
                 ecm_list = ''
                 for ecm in pkg.ecms:
                     # Zero-cost ECMs may have 0% thermal savings but estimated cost savings
+                    # Use Swedish name if available, fallback to English
+                    display_name = ecm.name_sv if hasattr(ecm, 'name_sv') and ecm.name_sv else ecm.name
                     savings_note = f'{ecm.individual_savings_percent:.0f}%' if ecm.individual_savings_percent > 0 else 'kostnadsbesparing'
-                    ecm_list += f'<li>{ecm.name} ({savings_note})</li>\n'
+                    ecm_list += f'<li>{display_name} ({savings_note})</li>\n'
 
                 pkg_name = pkg.name_sv if hasattr(pkg, 'name_sv') else pkg.name
                 description = pkg.description_sv if hasattr(pkg, 'description_sv') else pkg.description
@@ -916,12 +993,16 @@ class HTMLReportGenerator:
         if capital_packages:
             cards_html = ''
             is_simulated = False
+            prev_primary = 0  # Track previous package's primary energy for progressive display
+            prev_class = ''   # Track previous package's energy class for progressive display
 
             for pkg in capital_packages:
-                # Build ECM list
+                # Build ECM list with Swedish names
                 ecm_list = ''
                 for ecm in pkg.ecms:
-                    ecm_list += f'<li>{ecm.name} ({ecm.individual_savings_percent:.0f}%)</li>\n'
+                    # Use Swedish name if available, fallback to English
+                    display_name = ecm.name_sv if hasattr(ecm, 'name_sv') and ecm.name_sv else ecm.name
+                    ecm_list += f'<li>{display_name} ({ecm.individual_savings_percent:.0f}%)</li>\n'
 
                 # Handle both SimulatedPackage (new) and ECMPackage (old) formats
                 if hasattr(pkg, 'simulated_savings_percent'):
@@ -953,6 +1034,19 @@ class HTMLReportGenerator:
                             'standard' if 'steg2' in pkg.id or 'standard' in pkg.id else \
                             'premium' if 'steg3' in pkg.id or 'premium' in pkg.id else ''
 
+                # Format energy progression and fund timing
+                energy_progression_row = self._format_energy_progression_row(pkg)
+                fund_timing_row = self._format_fund_timing_row(pkg)
+                energy_class_row = self._format_energy_class_row(pkg, prev_primary, prev_class)
+
+                # Update prev_primary and prev_class for next iteration
+                after_primary = getattr(pkg, 'after_primary_kwh_m2', 0)
+                after_class = getattr(pkg, 'after_energy_class', '')
+                if after_primary > 0:
+                    prev_primary = after_primary
+                if after_class:
+                    prev_class = after_class
+
                 cards_html += f'''
                 <div class="package-card {card_class}">
                     <div class="package-header">
@@ -966,15 +1060,16 @@ class HTMLReportGenerator:
                         </ul>
                     </div>
                     <div class="package-footer">
+                        {energy_progression_row}
                         <span class="label">Investering:</span>
                         <span class="value">{pkg.total_cost_sek:,.0f} SEK</span>
                         <span class="label">Årlig besparing:</span>
                         <span class="value">{annual_savings:,.0f} SEK</span>
                         <span class="label">Återbetalningstid:</span>
                         <span class="value">{pkg.simple_payback_years:.1f} år</span>
-                        <span class="label">CO₂-reduktion:</span>
-                        <span class="value">{pkg.co2_reduction_kg_m2:.1f} kg/m²</span>
+                        {fund_timing_row}
                         {interaction_row}
+                        {energy_class_row}
                     </div>
                 </div>
                 '''
@@ -982,19 +1077,426 @@ class HTMLReportGenerator:
             explanation = "Paket simuleras med EnergyPlus för faktiska samverkanseffekter." if is_simulated else \
                          "Kombinerade besparingar uppskattas med 70% samverkanseffekt."
 
+            # Build energy progression timeline
+            timeline_html = self._format_energy_progression_timeline(capital_packages, data)
+
+            # Calculate totals across all packages
+            total_investment = sum(pkg.total_cost_sek for pkg in capital_packages)
+            total_annual_savings = sum(
+                pkg.annual_savings_sek if hasattr(pkg, 'annual_savings_sek') else pkg.annual_cost_savings_sek
+                for pkg in capital_packages
+            )
+            total_savings_percent = sum(
+                pkg.simulated_savings_percent if hasattr(pkg, 'simulated_savings_percent') else pkg.combined_savings_percent
+                for pkg in capital_packages
+            )
+            avg_payback = total_investment / total_annual_savings if total_annual_savings > 0 else 99
+
+            # Total summary box
+            totals_html = f'''
+            <div style="background: linear-gradient(135deg, #065f46, #047857); color: white; padding: 1.5rem; border-radius: 12px; margin-top: 1.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; text-align: center;">
+                <div>
+                    <div style="font-size: 0.85rem; opacity: 0.9;">Total investering</div>
+                    <div style="font-size: 1.8rem; font-weight: bold;">{total_investment:,.0f} SEK</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.85rem; opacity: 0.9;">Årlig besparing (alla åtgärder)</div>
+                    <div style="font-size: 1.8rem; font-weight: bold;">{total_annual_savings:,.0f} SEK/år</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.85rem; opacity: 0.9;">Total energibesparing</div>
+                    <div style="font-size: 1.8rem; font-weight: bold;">-{total_savings_percent:.0f}%</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.85rem; opacity: 0.9;">Genomsnittlig återbetalningstid</div>
+                    <div style="font-size: 1.8rem; font-weight: bold;">{avg_payback:.1f} år</div>
+                </div>
+            </div>
+            '''
+
+            # Green loan benefit section (if energy class improves)
+            green_loan_html = self._format_green_loan_benefit(capital_packages, data)
+            totals_html += green_loan_html
+
             result_html += f'''
             <section>
                 <h2>💰 Investeringspaket (Steg 1-3)</h2>
                 <p style="margin-bottom: 1rem; color: var(--gray-700);">
                     {explanation} Välj paket baserat på budget och ambitionsnivå.
                 </p>
+                {timeline_html}
                 <div class="package-cards">
                     {cards_html}
                 </div>
+                {totals_html}
             </section>
             '''
 
         return result_html
+
+    def _format_energy_class_row(self, pkg, prev_primary: float = 0, prev_class: str = '') -> str:
+        """Format energy class improvement row for package footer.
+
+        Args:
+            pkg: Package object
+            prev_primary: Primary energy AFTER previous package (for progressive display)
+            prev_class: Energy class AFTER previous package (for progressive display)
+        """
+        baseline_class = getattr(pkg, 'before_energy_class', '')
+        after_class = getattr(pkg, 'after_energy_class', '')
+        baseline_primary = getattr(pkg, 'before_primary_kwh_m2', 0)  # This is BASELINE
+        after_primary = getattr(pkg, 'after_primary_kwh_m2', 0)
+
+        if not baseline_class or not after_class:
+            return ''
+
+        # Use previous package's values if available, otherwise baseline
+        display_before = prev_primary if prev_primary > 0 else baseline_primary
+        display_before_class = prev_class if prev_class else baseline_class
+
+        # Calculate classes improved from display_before_class to after_class
+        class_order = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+        try:
+            before_idx = class_order.index(display_before_class)
+            after_idx = class_order.index(after_class)
+            classes_improved = before_idx - after_idx  # Positive = improvement
+        except ValueError:
+            classes_improved = 0
+
+        # Color coding for energy classes
+        class_colors = {
+            'A': '#22c55e',  # Green
+            'B': '#84cc16',  # Lime
+            'C': '#eab308',  # Yellow
+            'D': '#f97316',  # Orange
+            'E': '#ef4444',  # Red
+            'F': '#dc2626',  # Darker red
+            'G': '#991b1b',  # Dark red
+        }
+        before_color = class_colors.get(display_before_class, '#6b7280')
+        after_color = class_colors.get(after_class, '#6b7280')
+
+        improvement_badge = ''
+        if classes_improved > 0:
+            improvement_badge = f' <span style="color: #16a34a; font-weight: 600;">(+{classes_improved} klass)</span>'
+        elif classes_improved == 0 and display_before_class == after_class:
+            improvement_badge = ''  # No change, no badge needed
+
+        return f'''
+                        <span class="label">Primärenergi:</span>
+                        <span class="value">{display_before:.0f} → {after_primary:.0f} kWh/m²</span>
+                        <span class="label">Energiklass:</span>
+                        <span class="value">
+                            <span style="background: {before_color}; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.9em;">{display_before_class}</span>
+                            →
+                            <span style="background: {after_color}; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.9em;">{after_class}</span>
+                            {improvement_badge}
+                        </span>
+        '''
+
+    def _format_green_loan_benefit(self, capital_packages: list, data: 'ReportData') -> str:
+        """Format green loan benefit section for BRF board presentation.
+
+        Swedish green loans offer reduced interest rates for energy-efficient buildings:
+        - Energy class A ONLY: 0.5% interest rate reduction
+        NOTE: Energy class B does NOT qualify for green loans
+
+        The benefit applies to BOTH:
+        1. New investment loans for the ECM upgrades
+        2. Existing BRF loans that can be refinanced at green rates
+        """
+        if not capital_packages:
+            return ''
+
+        # Get baseline and final energy class
+        # First try data.energy_class, then fall back to first package's before_energy_class
+        baseline_class = data.energy_class or ''
+        if not baseline_class or baseline_class.lower() in ['unknown', '']:
+            # Try to get from first package
+            for pkg in capital_packages:
+                before = getattr(pkg, 'before_energy_class', '')
+                if before and before.lower() not in ['unknown', '']:
+                    baseline_class = before
+                    break
+
+        final_class = ''
+
+        # Find the final energy class after all packages
+        for pkg in capital_packages:
+            after = getattr(pkg, 'after_energy_class', '')
+            if after and after.lower() not in ['unknown', '']:
+                final_class = after
+
+        # Must have a valid final class
+        if not final_class:
+            return ''
+
+        # Calculate green loan rate reduction
+        class_order = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+        try:
+            final_idx = class_order.index(final_class)
+            # If baseline is unknown, assume it's worse than B (conservative for green loan eligibility)
+            if baseline_class and baseline_class.lower() not in ['unknown', '']:
+                baseline_idx = class_order.index(baseline_class)
+            else:
+                # Unknown baseline - assume C or worse for green loan calculation
+                baseline_idx = 2  # C
+                baseline_class = 'C (uppskattad)'
+        except ValueError:
+            return ''
+
+        # Determine rate reduction based on final class
+        # NOTE: Only Energy Class A qualifies for green loans
+        rate_reduction = 0.0
+        qualification_text = ''
+
+        if final_class == 'A':
+            rate_reduction = 0.005  # 0.5% for class A
+            qualification_text = 'Energiklass A kvalificerar för grönt bolån med 0,5% räntereduktion'
+        # Energy Class B does NOT qualify for green loans
+
+        if rate_reduction == 0:
+            return ''
+
+        # Calculate financial impact
+        total_investment = sum(pkg.total_cost_sek for pkg in capital_packages)
+        total_annual_savings = sum(
+            pkg.annual_savings_sek if hasattr(pkg, 'annual_savings_sek') else pkg.annual_cost_savings_sek
+            for pkg in capital_packages
+        )
+
+        # Estimate existing BRF loan (typical: 150,000-250,000 SEK per apartment)
+        num_apartments = data.num_apartments if data.num_apartments > 0 else 50  # Default estimate
+        estimated_existing_loan = num_apartments * 180_000  # Conservative estimate
+
+        # Calculate green loan benefits
+        # 1. Benefit on new investment (assuming 20-year loan)
+        new_loan_annual_benefit = total_investment * rate_reduction
+
+        # 2. Benefit on refinanced existing loans (the BIG win!)
+        refinance_annual_benefit = estimated_existing_loan * rate_reduction
+
+        # Total annual benefit
+        total_green_benefit = new_loan_annual_benefit + refinance_annual_benefit
+
+        # Recalculate payback with green loan benefit
+        original_payback = total_investment / total_annual_savings if total_annual_savings > 0 else 99
+        effective_annual_savings = total_annual_savings + total_green_benefit
+        green_payback = total_investment / effective_annual_savings if effective_annual_savings > 0 else 99
+
+        # NPV calculation (20 years, 3% discount rate)
+        discount_rate = 0.03
+        years = 20
+
+        # Original NPV
+        original_npv = -total_investment
+        for year in range(1, years + 1):
+            original_npv += total_annual_savings / ((1 + discount_rate) ** year)
+
+        # NPV with green loan
+        green_npv = -total_investment
+        for year in range(1, years + 1):
+            green_npv += effective_annual_savings / ((1 + discount_rate) ** year)
+
+        npv_improvement = green_npv - original_npv
+        npv_improvement_percent = (npv_improvement / abs(original_npv)) * 100 if original_npv != 0 else 0
+
+        # Per-apartment monthly impact
+        monthly_benefit_per_apt = total_green_benefit / num_apartments / 12
+
+        return f'''
+            <div style="background: linear-gradient(135deg, #166534, #15803d); color: white; padding: 1.5rem; border-radius: 12px; margin-top: 1rem;">
+                <h3 style="margin: 0 0 1rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                    🌱 Grönt Lån - Extra Finansiell Fördel
+                </h3>
+                <p style="margin: 0 0 1rem 0; opacity: 0.95; font-size: 1.05rem;">
+                    {qualification_text}. Detta ger betydande besparingar utöver energibesparingen.
+                </p>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+                    <div style="background: rgba(255,255,255,0.15); padding: 1rem; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 0.85rem; opacity: 0.9;">Räntereduktion</div>
+                        <div style="font-size: 1.6rem; font-weight: bold;">{rate_reduction*100:.1f}%</div>
+                    </div>
+                    <div style="background: rgba(255,255,255,0.15); padding: 1rem; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 0.85rem; opacity: 0.9;">Årlig räntebesparing</div>
+                        <div style="font-size: 1.6rem; font-weight: bold;">{total_green_benefit:,.0f} SEK</div>
+                    </div>
+                    <div style="background: rgba(255,255,255,0.15); padding: 1rem; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 0.85rem; opacity: 0.9;">Per lägenhet/mån</div>
+                        <div style="font-size: 1.6rem; font-weight: bold;">{monthly_benefit_per_apt:,.0f} SEK</div>
+                    </div>
+                </div>
+
+                <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.75rem 0; font-size: 1rem;">📊 Uppdelning räntebesparing</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.95rem;">
+                        <div>Ny investering ({total_investment:,.0f} SEK):</div>
+                        <div style="text-align: right; font-weight: 600;">{new_loan_annual_benefit:,.0f} SEK/år</div>
+                        <div>Refinansiering befintliga lån (~{estimated_existing_loan/1_000_000:.1f} MSEK):</div>
+                        <div style="text-align: right; font-weight: 600;">{refinance_annual_benefit:,.0f} SEK/år</div>
+                    </div>
+                </div>
+
+                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 8px;">
+                    <h4 style="margin: 0 0 0.75rem 0; font-size: 1rem;">💰 Effekt på ROI (inkl. grönt lån)</h4>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; text-align: center;">
+                        <div>
+                            <div style="font-size: 0.8rem; opacity: 0.9;">Återbetalningstid</div>
+                            <div style="font-size: 1.3rem;">
+                                <span style="text-decoration: line-through; opacity: 0.7;">{original_payback:.1f} år</span>
+                                → <span style="font-weight: bold;">{green_payback:.1f} år</span>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.8rem; opacity: 0.9;">NPV (20 år)</div>
+                            <div style="font-size: 1.3rem; font-weight: bold;">+{npv_improvement:,.0f} SEK</div>
+                            <div style="font-size: 0.8rem; opacity: 0.9;">(+{npv_improvement_percent:.0f}%)</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.8rem; opacity: 0.9;">Total årlig besparing</div>
+                            <div style="font-size: 1.3rem; font-weight: bold;">{effective_annual_savings:,.0f} SEK</div>
+                        </div>
+                    </div>
+                </div>
+
+                <p style="margin: 1rem 0 0 0; font-size: 0.85rem; opacity: 0.85; font-style: italic;">
+                    * Beräkning baserad på {num_apartments} lägenheter och uppskattade föreningslån på {estimated_existing_loan/1_000_000:.1f} MSEK.
+                    Faktisk besparing beror på föreningens faktiska lånesituation. Kontakta er bank för exakt offert.
+                </p>
+            </div>
+        '''
+
+    def _format_energy_progression_row(self, pkg) -> str:
+        """Format energy progression row showing total energy before → after this package."""
+        before_total = getattr(pkg, 'before_total_kwh_m2', 0)
+        after_total = getattr(pkg, 'after_total_kwh_m2', 0)
+        cumulative_pct = getattr(pkg, 'cumulative_savings_percent', 0)
+
+        if before_total <= 0 and after_total <= 0:
+            return ''
+
+        # Calculate incremental savings for THIS package only
+        incremental_savings = before_total - after_total
+        incremental_pct = (incremental_savings / before_total * 100) if before_total > 0 else 0
+
+        # Clean, simple styling - no garish backgrounds
+        return f'''
+                        <span class="label">Energi (detta steg):</span>
+                        <span class="value">
+                            {before_total:.0f} → {after_total:.0f} kWh/m²
+                            <span style="color: #16a34a; font-weight: 600;">(-{incremental_pct:.0f}%)</span>
+                        </span>
+                        <span class="label">Kumulativ besparing:</span>
+                        <span class="value" style="color: #16a34a; font-weight: 600;">-{cumulative_pct:.0f}% från baseline</span>
+        '''
+
+    def _format_fund_timing_row(self, pkg) -> str:
+        """Format fund-based timing row showing when package can be afforded."""
+        fund_year = getattr(pkg, 'fund_recommended_year', 0)
+        years_to_afford = getattr(pkg, 'years_to_afford', 0)
+        fund_available = getattr(pkg, 'fund_available_sek', 0)
+        total_cost = getattr(pkg, 'total_cost_sek', 0)
+
+        if fund_year <= 0:
+            return ''
+
+        # Simple, clean styling based on years to afford
+        if years_to_afford == 0:
+            timing_color = "#16a34a"  # Green
+            timing_text = f"{fund_year}"
+            timing_note = "Fonden räcker"
+        elif years_to_afford <= 2:
+            timing_color = "#65a30d"  # Lime
+            timing_text = f"{fund_year}"
+            timing_note = f"om {years_to_afford} år"
+        elif years_to_afford <= 5:
+            timing_color = "#ca8a04"  # Yellow
+            timing_text = f"{fund_year}"
+            timing_note = f"om {years_to_afford} år"
+        else:
+            timing_color = "#ea580c"  # Orange
+            timing_text = f"{fund_year}"
+            timing_note = f"om {years_to_afford} år"
+
+        return f'''
+                        <span class="label">Rekommenderat år:</span>
+                        <span class="value">
+                            <strong style="color: {timing_color};">{timing_text}</strong>
+                            <span style="font-size: 0.85em; color: var(--gray-500);">({timing_note})</span>
+                        </span>
+        '''
+
+    def _format_energy_progression_timeline(self, packages, data: 'ReportData') -> str:
+        """Format a simple table showing energy progression through packages."""
+        if not packages:
+            return ''
+
+        # Get baseline total energy
+        baseline_total = data.baseline_total_kwh_m2 if data.baseline_total_kwh_m2 > 0 else data.baseline_heating_kwh_m2
+
+        # Build table rows
+        rows = []
+
+        # Baseline row
+        rows.append(('Nuläge', baseline_total, '-', '-'))
+
+        prev_energy = baseline_total
+        for pkg in packages:
+            after_total = getattr(pkg, 'after_total_kwh_m2', 0)
+            fund_year = getattr(pkg, 'fund_recommended_year', 0)
+            cumulative_pct = getattr(pkg, 'cumulative_savings_percent', 0)
+
+            if after_total > 0:
+                year_str = str(fund_year) if fund_year > 0 else '-'
+                rows.append((pkg.name, after_total, f'-{cumulative_pct:.0f}%', year_str))
+                prev_energy = after_total
+
+        if len(rows) < 2:
+            return ''
+
+        # Calculate total savings
+        final_energy = rows[-1][1]
+        total_savings_pct = ((baseline_total - final_energy) / baseline_total) * 100 if baseline_total > 0 else 0
+
+        # Build simple HTML table
+        table_rows = ''
+        for name, energy, savings, year in rows:
+            is_baseline = name == 'Nuläge'
+            row_style = 'font-weight: 600;' if is_baseline else ''
+            year_cell = '' if is_baseline else f'<td style="text-align: center; color: var(--primary);">{year}</td>'
+
+            table_rows += f'''
+                <tr style="{row_style}">
+                    <td>{name}</td>
+                    <td style="text-align: right;">{energy:.0f} kWh/m²</td>
+                    <td style="text-align: right; color: #16a34a;">{savings}</td>
+                    {year_cell}
+                </tr>
+            '''
+
+        return f'''
+            <div style="margin-bottom: 1.5rem;">
+                <h4 style="margin-bottom: 0.5rem;">Energiprogression</h4>
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid var(--gray-200);">
+                            <th style="text-align: left; padding: 0.5rem;">Steg</th>
+                            <th style="text-align: right; padding: 0.5rem;">Energi</th>
+                            <th style="text-align: right; padding: 0.5rem;">Besparing</th>
+                            <th style="text-align: center; padding: 0.5rem;">År</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {table_rows}
+                    </tbody>
+                </table>
+                <p style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--gray-500);">
+                    Total energibesparing: <strong style="color: #16a34a;">-{total_savings_pct:.0f}%</strong>
+                    (från {baseline_total:.0f} till {final_energy:.0f} kWh/m²)
+                </p>
+            </div>
+        '''
 
     def _format_effektvakt_section(self, data: ReportData) -> str:
         """Format effektvakt (peak demand optimization) section."""
@@ -1203,9 +1705,37 @@ class HTMLReportGenerator:
 
         # Build cash flow table rows (first 10 years)
         rows_html = ''
+
+        # ECM ID to Swedish name mapping
+        ecm_names_sv = {
+            "heating_curve_adjustment": "Värmekurvejustering",
+            "night_setback": "Nattsänkning",
+            "bms_optimization": "Driftoptimering",
+            "district_heating_optimization": "FV-optimering",
+            "dhw_circulation_optimization": "VVC-optimering",
+            "dhw_tank_insulation": "Tankisolering",
+            "effektvakt_optimization": "Effektvakt",
+            "ventilation_schedule_optimization": "Ventilationsschema",
+            "air_sealing": "Tätning",
+            "smart_thermostats": "Smarta termostater",
+            "demand_controlled_ventilation": "DCV-ventilation",
+            "led_lighting": "LED-belysning",
+            "led_outdoor": "LED utomhus",
+            "roof_insulation": "Takisolering",
+            "window_replacement": "Fönsterbyte",
+            "wall_external_insulation": "Fasadisolering",
+            "heat_pump_water_heater": "VVB-värmepump",
+            "solar_thermal": "Solfångare",
+            "solar_pv": "Solceller",
+            "building_automation_system": "BAS/Automation",
+            "basement_insulation": "Källarisolering",
+            "entrance_door_replacement": "Dörrbyten",
+        }
+
         for proj in plan.projections[:10]:
             year = proj.get('year', '')
             fund_start = proj.get('fund_start_sek', 0)
+            fund_contribution = proj.get('fund_contribution_sek', 0)
             investment = proj.get('investment_sek', 0)
             savings = proj.get('energy_savings_sek', 0)
             fund_end = proj.get('fund_end_sek', 0)
@@ -1216,12 +1746,20 @@ class HTMLReportGenerator:
             if proj.get('fund_warning', False):
                 row_class = 'warning-row'
 
-            ecm_note = f" ({', '.join(ecms[:2])})" if ecms else ''
+            # Convert ECM IDs to Swedish names (show all ECMs, not truncated)
+            ecm_names = [ecm_names_sv.get(ecm, ecm) for ecm in ecms]
+            if len(ecm_names) > 4:
+                # Show first 3 + count of remaining
+                display_names = ecm_names[:3] + [f"+{len(ecm_names) - 3} till"]
+                ecm_note = f"({', '.join(display_names)})"
+            else:
+                ecm_note = f"({', '.join(ecm_names)})" if ecm_names else ''
 
             rows_html += f'''
             <tr class="{row_class}">
                 <td>{year}</td>
                 <td>{fund_start:,.0f}</td>
+                <td style="color: var(--primary);">{fund_contribution:,.0f}</td>
                 <td>{investment:,.0f}</td>
                 <td style="color: var(--success);">{savings:,.0f}</td>
                 <td>{fund_end:,.0f}</td>
@@ -1274,6 +1812,7 @@ class HTMLReportGenerator:
                         <tr>
                             <th>År</th>
                             <th>Fond start</th>
+                            <th>Inbetalning</th>
                             <th>Investering</th>
                             <th>Besparing/år</th>
                             <th>Fond slut</th>
@@ -1464,7 +2003,125 @@ class HTMLReportGenerator:
 
                 {morris_html}
             </div>
+
+            {self._format_calibration_anomalies_section(data)}
         </section>
+        '''
+
+    def _format_calibration_anomalies_section(self, data: ReportData) -> str:
+        """Format calibration anomalies section (Agentic Raiden insights)."""
+        if not data.calibration_anomalies or not data.calibration_anomalies.has_anomalies:
+            return ''
+
+        anomalies_data = data.calibration_anomalies
+
+        # Build anomaly cards
+        anomaly_cards = ""
+        for anomaly in anomalies_data.anomalies:
+            # Severity styling
+            severity_colors = {
+                "high": ("danger", "HÖG", "🔴"),
+                "medium": ("warning", "MEDEL", "🟡"),
+                "low": ("info", "LÅG", "🔵"),
+            }
+            color_class, severity_sv, icon = severity_colors.get(
+                anomaly.severity.lower(), ("info", "OKÄND", "⚪")
+            )
+
+            # Direction indicator
+            direction = "sämre" if anomaly.is_worse else "bättre"
+            direction_icon = "↑" if anomaly.is_worse else "↓"
+
+            # ECM impacts
+            ecm_impact_html = ""
+            if anomaly.impacts_ecm:
+                ecm_names = ", ".join(anomaly.impacts_ecm[:3])
+                ecm_impact_html = f'''
+                <div style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-muted);">
+                    <strong>Påverkar åtgärder:</strong> {ecm_names}
+                </div>
+                '''
+
+            anomaly_cards += f'''
+            <div class="stat-card" style="border-left: 4px solid var(--{color_class}); margin-bottom: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                        <h4 style="margin: 0; color: var(--{color_class});">
+                            {icon} {anomaly.parameter_name_sv}
+                        </h4>
+                        <div style="font-size: 0.9rem; margin-top: 0.5rem;">
+                            Förväntat: <strong>{anomaly.expected:.2f}</strong> →
+                            Kalibrerat: <strong style="color: var(--{color_class});">{anomaly.calibrated:.2f}</strong>
+                            <span style="color: var(--{color_class});">
+                                ({anomaly.deviation_percent:+.0f}% {direction_icon} {direction})
+                            </span>
+                        </div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span class="badge" style="background: var(--{color_class}); color: white; padding: 0.25rem 0.5rem; border-radius: 4px;">
+                            {severity_sv}
+                        </span>
+                    </div>
+                </div>
+                <div style="margin-top: 0.75rem; font-size: 0.9rem;">
+                    <p style="margin: 0;">{anomaly.explanation_sv}</p>
+                </div>
+                <div style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--primary);">
+                    <strong>Rekommendation:</strong> {anomaly.recommendation_sv}
+                </div>
+                {ecm_impact_html}
+            </div>
+            '''
+
+        # Summary alert
+        alert_class = "danger" if anomalies_data.requires_investigation else "warning"
+        summary_html = f'''
+        <div class="alert" style="background: var(--{alert_class}); color: {'#fff' if alert_class == 'danger' else '#000'}; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+            <strong>{'🔴 Inspektion rekommenderas' if anomalies_data.requires_investigation else '⚠️ Avvikelser upptäckta'}</strong><br>
+            <span style="font-size: 0.9rem;">
+                Kalibreringen hittade {len(anomalies_data.anomalies)} avvikelser:
+                {f'{anomalies_data.high_count} allvarliga, ' if anomalies_data.high_count else ''}
+                {f'{anomalies_data.medium_count} medelstora, ' if anomalies_data.medium_count else ''}
+                {f'{anomalies_data.low_count} mindre' if anomalies_data.low_count else ''}
+            </span>
+        </div>
+        '''
+
+        # Quality flags
+        flags_html = ""
+        if anomalies_data.quality_flags:
+            flag_names_sv = {
+                "WINDOWS_DEFECTIVE": "Fönster underpresterar",
+                "WINDOWS_SUBOPTIMAL": "Fönster suboptimala",
+                "WINDOWS_UPGRADED": "Fönster uppgraderade",
+                "ENVELOPE_POOR": "Dålig klimatskal",
+                "ENVELOPE_BELOW_EXPECTED": "Klimatskal under förväntat",
+                "VERY_LEAKY": "Mycket otät byggnad",
+                "LEAKY": "Otät byggnad",
+                "FTX_UNDERPERFORMING": "FTX underpresterar",
+                "FTX_BELOW_EXPECTED": "FTX under förväntat",
+            }
+            flags_badges = " ".join([
+                f'<span style="background: var(--bg-secondary); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">{flag_names_sv.get(f, f)}</span>'
+                for f in anomalies_data.quality_flags
+            ])
+            flags_html = f'''
+            <div style="margin-top: 1rem;">
+                <strong>Kvalitetsflaggor:</strong> {flags_badges}
+            </div>
+            '''
+
+        return f'''
+        <div style="margin-top: 2rem;">
+            <h3>🔍 Kalibreringsinsikter (Agentic Raiden)</h3>
+            <p style="color: var(--text-muted); margin-bottom: 1rem;">
+                Automatisk analys av avvikelser mellan kalibrerade värden och förväntade arkettypvärden.
+            </p>
+
+            {summary_html}
+            {anomaly_cards}
+            {flags_html}
+        </div>
         '''
 
     def _format_complexity_section(self, data: ReportData) -> str:
@@ -1529,6 +2186,176 @@ class HTMLReportGenerator:
             </div>
 
             {warning_html}
+        </section>
+        '''
+
+    def _format_clarification_section(self, data: ReportData) -> str:
+        """Format clarification questions section for iterative improvement."""
+        if not data.clarification_questions or not data.clarification_questions.has_questions:
+            return ''
+
+        cq = data.clarification_questions
+
+        # Priority color mapping
+        priority_colors = {
+            "high": ("danger", "HÖG", "🔴"),
+            "medium": ("warning", "MEDEL", "🟡"),
+            "low": ("info", "LÅG", "🔵"),
+        }
+
+        # Category Swedish translations
+        category_names = {
+            "building_data": "Byggnadsdata",
+            "energy_data": "Energidata",
+            "existing_measures": "Befintliga åtgärder",
+            "renovation_history": "Renoveringshistorik",
+            "anomaly_verification": "Verifiering av avvikelse",
+            "calibration": "Kalibrering",
+        }
+
+        # Build question cards
+        question_cards = ""
+        for q in cq.questions:
+            color_class, priority_sv, icon = priority_colors.get(
+                q.priority.lower(), ("info", "OKÄND", "⚪")
+            )
+            category_sv = category_names.get(q.category, q.category)
+
+            # Build input element based on question type
+            input_html = ""
+            if q.question_type == "multiple_choice":
+                options_html = "".join([
+                    f'<option value="{opt.get("value", "")}" {"selected" if opt.get("value") == q.default_value else ""}>{opt.get("label_sv", opt.get("value", ""))}</option>'
+                    for opt in q.options
+                ])
+                input_html = f'''
+                <select name="{q.id}" class="question-input" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-200); border-radius: 4px;">
+                    <option value="">-- Välj --</option>
+                    {options_html}
+                </select>
+                '''
+            elif q.question_type == "numeric":
+                input_html = f'''
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="number" name="{q.id}" class="question-input"
+                           value="{q.default_value or ''}"
+                           min="{q.min_value or ''}" max="{q.max_value or ''}"
+                           style="width: 120px; padding: 0.5rem; border: 1px solid var(--gray-200); border-radius: 4px;">
+                    <span style="color: var(--text-muted);">{q.unit}</span>
+                </div>
+                '''
+            elif q.question_type == "yes_no":
+                yes_checked = "checked" if q.default_value is True else ""
+                no_checked = "checked" if q.default_value is False else ""
+                input_html = f'''
+                <div style="display: flex; gap: 1rem;">
+                    <label style="display: flex; align-items: center; gap: 0.25rem;">
+                        <input type="radio" name="{q.id}" value="true" {yes_checked}> Ja
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.25rem;">
+                        <input type="radio" name="{q.id}" value="false" {no_checked}> Nej
+                    </label>
+                </div>
+                '''
+            else:  # text
+                input_html = f'''
+                <textarea name="{q.id}" class="question-input" rows="2"
+                          style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-200); border-radius: 4px;"
+                          placeholder="Skriv ditt svar här...">{q.default_value or ''}</textarea>
+                '''
+
+            # Confidence indicator
+            confidence_gain = q.confidence_if_answered - q.confidence_current
+            confidence_html = f'''
+            <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
+                <span title="Om du svarar förbättras noggrannheten">
+                    Nuvarande säkerhet: {q.confidence_current*100:.0f}% →
+                    <strong style="color: var(--success);">{q.confidence_if_answered*100:.0f}%</strong>
+                    (+{confidence_gain*100:.0f}%)
+                </span>
+            </div>
+            '''
+
+            question_cards += f'''
+            <div class="stat-card" style="border-left: 4px solid var(--{color_class}); margin-bottom: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+                    <div>
+                        <span class="badge" style="background: var(--bg-secondary); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; margin-right: 0.5rem;">
+                            {category_sv}
+                        </span>
+                        <span class="badge" style="background: var(--{color_class}); color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem;">
+                            {icon} {priority_sv} prioritet
+                        </span>
+                    </div>
+                </div>
+
+                <h4 style="margin: 0 0 0.75rem 0; color: var(--gray-900);">
+                    {q.question_sv}
+                </h4>
+
+                {input_html}
+
+                <div style="margin-top: 0.75rem; font-size: 0.85rem; color: var(--primary);">
+                    <strong>Påverkan:</strong> {q.impact_description_sv}
+                </div>
+
+                {confidence_html}
+            </div>
+            '''
+
+        # Summary statistics
+        high_count = cq.high_priority_count
+        medium_count = cq.medium_priority_count
+        low_count = cq.low_priority_count
+
+        summary_text = []
+        if high_count:
+            summary_text.append(f"{high_count} viktiga")
+        if medium_count:
+            summary_text.append(f"{medium_count} medelprioritet")
+        if low_count:
+            summary_text.append(f"{low_count} mindre viktiga")
+
+        # Reassessment form action
+        endpoint = cq.reassessment_endpoint or f"/api/reassess/{cq.analysis_id}"
+
+        return f'''
+        <section>
+            <h2>❓ Förbättra analysen</h2>
+            <p style="color: var(--text-muted); margin-bottom: 1rem;">
+                Raiden har identifierat osäkerheter som påverkar resultatet. Svara på frågorna nedan
+                för att få en mer exakt analys. När du skickar in svaren kör Raiden om analysen
+                med förbättrad noggrannhet.
+            </p>
+
+            <div class="alert" style="background: var(--primary); color: white; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+                <strong>📊 {len(cq.questions)} frågor</strong>
+                ({", ".join(summary_text)}) •
+                Potentiell förbättring: <strong>+{cq.total_confidence_gain*100:.0f}%</strong> noggrannhet
+            </div>
+
+            <form id="clarification-form" action="{endpoint}" method="POST" style="margin-bottom: 1rem;">
+                <input type="hidden" name="analysis_id" value="{cq.analysis_id}">
+                <input type="hidden" name="version" value="{cq.version}">
+
+                {question_cards}
+
+                <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+                    <button type="submit"
+                            style="background: var(--primary); color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; font-size: 1rem; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
+                        🔄 Kör om analysen med mina svar
+                    </button>
+                    <button type="button" onclick="window.print()"
+                            style="background: var(--gray-200); color: var(--gray-700); border: none; padding: 0.75rem 1.5rem; border-radius: 8px; font-size: 1rem; cursor: pointer;">
+                        🖨️ Skriv ut rapport
+                    </button>
+                </div>
+            </form>
+
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 1rem;">
+                <strong>Tips:</strong> Du behöver inte svara på alla frågor. Även ett fåtal svar förbättrar resultatet.
+                Svaren sparas och du får en uppdaterad rapport (version {cq.version + 1}).
+            </p>
         </section>
         '''
 

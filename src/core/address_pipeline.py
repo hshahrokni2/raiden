@@ -108,17 +108,28 @@ class GeocodingResult:
 class BuildingData:
     """Building data assembled from various sources."""
     # Location
-    address: str
+    address: str  # Primary/input address
     latitude: float
     longitude: float
 
-    # Building characteristics
-    construction_year: int
+    # Property-level data (fastighetsbeteckning)
+    # A property can contain multiple buildings/addresses
+    property_designation: str = ""  # e.g., "Böljan 2"
+    property_owner: str = ""  # e.g., "BRF Sjöstadsparterren"
+    all_addresses: List[str] = field(default_factory=list)  # All addresses in property
+    num_buildings: int = 1  # Number of buildings in property
+    num_trapphus: int = 1  # Total entrances/staircases
+    # Individual building details for multi-roof analysis
+    # Each dict has: address, lat, lon, footprint_area_m2, height_m, num_floors, atemp_m2
+    building_details: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Building characteristics (aggregated for whole property)
+    construction_year: int = 0  # 0 = unknown
     building_type: str = "multi_family"
     facade_material: str = "concrete"
-    atemp_m2: float = 0
-    num_floors: int = 4
-    num_apartments: int = 0
+    atemp_m2: float = 0  # TOTAL for property
+    num_floors: int = 4  # Max floors across buildings
+    num_apartments: int = 0  # TOTAL for property
 
     # Building form and geometry
     building_form: str = "generic"  # lamellhus, skivhus, punkthus, etc.
@@ -308,6 +319,7 @@ class BuildingDataFetcher:
         self._sweden_buildings_loader = None
         self._wwr_detector = None
         self._material_classifier = None
+        self._brfdashboard_fetcher = None
 
     @property
     def wwr_detector(self):
@@ -356,6 +368,342 @@ class BuildingDataFetcher:
             except ImportError:
                 logger.warning("FacadeImageFetcher not available")
         return self._facade_fetcher
+
+    @property
+    def brfdashboard(self):
+        """Lazy load BRF Dashboard database fetcher."""
+        if self._brfdashboard_fetcher is None:
+            try:
+                from ..db.brfdashboard import BRFDashboardFetcher
+                self._brfdashboard_fetcher = BRFDashboardFetcher()
+                if self._brfdashboard_fetcher.available:
+                    logger.info("BRF Dashboard database connected")
+                else:
+                    logger.warning("BRF Dashboard database not available")
+            except Exception as e:
+                logger.warning(f"BRF Dashboard fetcher not available: {e}")
+        return self._brfdashboard_fetcher
+
+    def _check_brfdashboard_for_property(
+        self,
+        address: str,
+        property_designation: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check BRF Dashboard database for property data and existing Raiden analysis.
+
+        The BRF Dashboard database contains:
+        - v_building_complete: 54,932 buildings with all curated data
+        - recommended_measures: Energy expert recommendations with savings estimates
+        - implemented_measures: Already-done ECMs (for smart filtering)
+        - energy_costs: Actual SEK costs from BRF annual reports
+        - Existing Raiden analysis results (facade_material, building_form, wwr)
+
+        Args:
+            address: Street address
+            property_designation: Fastighetsbeteckning if known
+
+        Returns:
+            Dict with database data if found, None otherwise
+        """
+        if not self.brfdashboard or not self.brfdashboard.available:
+            return None
+
+        try:
+            # First try v_building_complete (richest data source with 54,932 buildings)
+            building = self.brfdashboard.get_building_complete(address=address)
+
+            if building:
+                logger.info(f"✓ Found in BRF Dashboard v_building_complete: {building.address}")
+
+                result = {
+                    "source": "brfdashboard_v_building_complete",
+                    "building_id": building.building_id,
+                    "formular_id": building.formular_id,
+                    "property_designation": building.property_designation,
+                    "address": building.address,
+                    "built_year": building.construction_year,
+                    "renovation_year": building.renovation_year,
+                    "total_area_sqm": building.atemp_m2,
+                    "total_apartments": building.num_apartments,
+                    "floors": building.num_floors,
+                    "height_m": building.height_m,
+                    "footprint_m2": building.footprint_area_m2,
+                    "heating_type": building.heating_type_simple,
+                    "heating_system_detailed": building.heating_system_detailed,
+                    "latitude": building.latitude,
+                    "longitude": building.longitude,
+                    "energy_class": building.energy_class,
+                    "energy_kwh_m2": building.declared_energy_kwh_m2,
+                    "ventilation_type": building.ventilation_type,
+                    "has_ftx": building.has_ftx,
+                    "has_district_heating": building.has_district_heating,
+                    "has_heat_pump": building.has_heat_pump,
+                    "heat_pump_type": building.heat_pump_type,
+                    "has_solar_pv": building.has_solar_pv,
+                    "has_solar_thermal": building.has_solar_thermal,
+                }
+
+                # Add recommended_measures (VALUABLE - expert recommendations!)
+                if building.recommended_measures:
+                    result["recommended_measures"] = [
+                        {
+                            "category": m.category,
+                            "description": m.description,
+                            "savings_kwh_year": m.savings_kwh_year,
+                            "cost_per_saved_kwh": m.cost_per_saved_kwh,
+                        }
+                        for m in building.recommended_measures
+                    ]
+                    result["total_recommended_savings_kwh"] = building.total_recommended_savings_kwh()
+                    logger.info(f"  → Found {len(building.recommended_measures)} expert recommendations")
+
+                # Add implemented_measures (for smart ECM filtering)
+                if building.implemented_measures:
+                    result["implemented_measures"] = [
+                        {
+                            "measure_type": m.measure_type,
+                            "description": m.description,
+                            "implementation_year": m.implementation_year,
+                        }
+                        for m in building.implemented_measures
+                    ]
+
+                # Add energy_costs (VALUABLE - real costs from annual reports!)
+                if building.energy_costs:
+                    result["energy_costs"] = {
+                        "heating_cost_kr": building.energy_costs.heating_cost_kr,
+                        "electricity_cost_kr": building.energy_costs.electricity_cost_kr,
+                        "water_cost_kr": building.energy_costs.water_cost_kr,
+                        "total_energy_cost_kr": building.energy_costs.total_energy_cost_kr(),
+                        "fiscal_year": building.energy_costs.fiscal_year,
+                    }
+                    if building.atemp_m2 and building.atemp_m2 > 0:
+                        result["energy_costs"]["cost_per_sqm"] = building.energy_costs.cost_per_sqm(building.atemp_m2)
+                    logger.info(f"  → Found energy costs: {building.energy_costs.heating_cost_kr:,.0f} SEK heating")
+
+                # Existing Raiden analysis results (skip re-analysis if available)
+                if building.raiden_facade_material:
+                    result["raiden_facade_material"] = building.raiden_facade_material
+                if building.raiden_building_form:
+                    result["raiden_building_form"] = building.raiden_building_form
+                if building.raiden_wwr:
+                    result["raiden_wwr"] = building.raiden_wwr
+                if building.raiden_confidence:
+                    result["raiden_confidence"] = building.raiden_confidence
+
+                # Store the full BuildingComplete object for ECM prioritization
+                result["_building_complete"] = building
+
+                return result
+
+            # Fallback: try brf_property (aggregated BRF data)
+            brf_data = self.brfdashboard.get_brf_property(
+                address=address,
+                property_designation=property_designation
+            )
+
+            if brf_data:
+                logger.info(f"✓ Found in BRF Dashboard brf_property: {brf_data.property_designation}")
+
+                result = {
+                    "source": "brfdashboard",
+                    "property_designation": brf_data.property_designation,
+                    "address": brf_data.address,
+                    "built_year": brf_data.built_year,
+                    "total_area_sqm": brf_data.total_area_sqm,
+                    "total_apartments": brf_data.total_apartments,
+                    "floors": brf_data.floors,
+                    "buildings_count": brf_data.buildings_count,
+                    "heating_type": brf_data.heating_type,
+                    "latitude": brf_data.latitude,
+                    "longitude": brf_data.longitude,
+                }
+
+                # Gripen energy data
+                if brf_data.gripen_energy_class:
+                    result["energy_class"] = brf_data.gripen_energy_class
+                    result["energy_kwh_m2"] = brf_data.gripen_specific_energy_use
+                elif brf_data.energy_class:
+                    result["energy_class"] = brf_data.energy_class
+                    result["energy_kwh_m2"] = brf_data.energy_kwh_per_sqm
+
+                # Existing Raiden analysis results (skip re-analysis if available)
+                if brf_data.raiden_facade_material:
+                    result["raiden_facade_material"] = brf_data.raiden_facade_material
+                if brf_data.raiden_building_form:
+                    result["raiden_building_form"] = brf_data.raiden_building_form
+                if brf_data.raiden_wwr:
+                    result["raiden_wwr"] = brf_data.raiden_wwr
+                if brf_data.raiden_confidence:
+                    result["raiden_confidence"] = brf_data.raiden_confidence
+
+                return result
+
+            # Last fallback: try sweden_buildings directly
+            sweden_building = self.brfdashboard.get_sweden_building_by_address(address)
+            if sweden_building:
+                logger.info(f"✓ Found in BRF Dashboard sweden_buildings: {sweden_building.address}")
+                return {
+                    "source": "brfdashboard_sweden",
+                    "property_designation": sweden_building.property_designation,
+                    "address": sweden_building.address,
+                    "built_year": sweden_building.construction_year,
+                    "total_area_sqm": sweden_building.atemp_m2,
+                    "num_apartments": sweden_building.num_apartments,
+                    "floors": sweden_building.num_floors,
+                    "energy_class": sweden_building.energy_class,
+                    "energy_kwh_m2": sweden_building.energy_performance_kwh_m2,
+                    "ventilation_type": sweden_building.ventilation_type,
+                    "has_ftx": sweden_building.has_ftx,
+                }
+
+        except Exception as e:
+            logger.warning(f"BRF Dashboard lookup failed: {e}")
+
+        return None
+
+    def _find_all_buildings_in_property(
+        self,
+        property_designation: str,
+    ) -> List[Any]:
+        """
+        Find all buildings that belong to the same property (fastighetsbeteckning).
+
+        In Sweden, a BRF owns a property (fastighet) which can contain multiple
+        buildings/addresses. Energy analysis should be done at property level.
+
+        Args:
+            property_designation: The fastighetsbeteckning (e.g., "Böljan 2")
+
+        Returns:
+            List of SwedishBuilding objects in this property
+        """
+        if not property_designation or not self.sweden_buildings:
+            return []
+
+        # Search through all buildings for matching property
+        matching = []
+        try:
+            # Access the internal buildings list
+            all_buildings = self.sweden_buildings._buildings
+
+            for building in all_buildings:
+                props = building.raw_properties
+                fastbet = props.get('IdFastBet', '')
+                if fastbet == property_designation:
+                    matching.append(building)
+
+            logger.info(f"Found {len(matching)} buildings in property '{property_designation}'")
+
+        except Exception as e:
+            logger.warning(f"Error searching for property buildings: {e}")
+
+        return matching
+
+    def _aggregate_property_data(
+        self,
+        buildings: List[Any],
+        primary_building: Any,
+    ) -> Dict[str, Any]:
+        """
+        Aggregate data from multiple buildings in the same property.
+
+        Args:
+            buildings: List of SwedishBuilding objects in the property
+            primary_building: The building that matches the input address
+
+        Returns:
+            Dict with aggregated property-level data
+        """
+        if not buildings:
+            return {}
+
+        # Get property info from primary building
+        props = primary_building.raw_properties
+        property_designation = props.get('IdFastBet', '')
+        property_owner = props.get('42P_ByggnadsAgare', '')
+
+        # De-duplicate buildings by address (database may have duplicate records)
+        # Use address as key since same address = same physical entrance
+        unique_buildings = {}
+        for b in buildings:
+            addr = b.address
+            if addr not in unique_buildings:
+                unique_buildings[addr] = b
+            # If duplicate, keep the one with more data (higher atemp)
+            elif (b.atemp_m2 or 0) > (unique_buildings[addr].atemp_m2 or 0):
+                unique_buildings[addr] = b
+
+        buildings = list(unique_buildings.values())
+        logger.info(f"De-duplicated to {len(buildings)} unique addresses")
+
+        # Aggregate across all unique buildings
+        all_addresses = sorted(unique_buildings.keys())
+        total_apartments = sum(b.num_apartments or 0 for b in buildings)
+        total_atemp = sum(b.atemp_m2 or 0 for b in buildings)
+        total_trapphus = sum(b.raw_properties.get('EgenAntalTrapphus', 0) or 0 for b in buildings)
+        max_floors = max((b.num_floors or 0 for b in buildings), default=0)
+        total_footprint = sum(b.footprint_area_m2 or 0 for b in buildings)
+
+        # Aggregate energy data
+        total_district_heating = sum(b.district_heating_kwh or 0 for b in buildings)
+        total_exhaust_hp = sum(b.exhaust_air_hp_kwh or 0 for b in buildings)
+        total_ground_hp = sum(b.ground_source_hp_kwh or 0 for b in buildings)
+
+        # Use most common construction year (should be same for property)
+        years = [b.construction_year for b in buildings if b.construction_year]
+        construction_year = max(set(years), key=years.count) if years else 2000
+
+        # Use most common energy class
+        classes = [b.energy_class for b in buildings if b.energy_class]
+        energy_class = max(set(classes), key=classes.count) if classes else "Unknown"
+
+        logger.info(f"Property '{property_designation}' aggregated: {len(all_addresses)} addresses, "
+                    f"{total_apartments:.0f} apartments, {total_atemp:.0f} m²")
+
+        # Preserve individual building data for multi-roof solar analysis
+        # Each building has its own roof that should be analyzed
+        building_details = []
+        for b in buildings:
+            # Get centroid coordinates in WGS84 (lat, lon)
+            # SwedishBuilding stores SWEREF99 TM coordinates, need to convert
+            lat, lon = None, None
+            try:
+                centroid = b.get_centroid_wgs84()
+                if centroid and centroid[0] != 0 and centroid[1] != 0:
+                    lat, lon = centroid[0], centroid[1]
+            except Exception:
+                pass
+
+            building_details.append({
+                "address": b.address,
+                "lat": lat,
+                "lon": lon,
+                "footprint_area_m2": b.footprint_area_m2 or 0,
+                "height_m": b.height_m,
+                "num_floors": b.num_floors,
+                "atemp_m2": b.atemp_m2 or 0,
+            })
+
+        return {
+            "property_designation": property_designation,
+            "property_owner": property_owner,
+            "all_addresses": all_addresses,
+            "num_buildings": len(buildings),
+            "num_trapphus": int(total_trapphus),
+            "num_apartments": int(total_apartments),
+            "atemp_m2": total_atemp,
+            "num_floors": int(max_floors),
+            "footprint_area_m2": total_footprint,
+            "construction_year": construction_year,
+            "energy_class": energy_class,
+            "district_heating_kwh": total_district_heating,
+            "exhaust_air_hp_kwh": total_exhaust_hp,
+            "ground_source_hp_kwh": total_ground_hp,
+            # NEW: Individual building details for multi-roof analysis
+            "building_details": building_details,
+        }
 
     def _analyze_facade_images(
         self,
@@ -607,6 +955,51 @@ class BuildingDataFetcher:
                 data_sources=sources,
             )
 
+            # ============================================================
+            # PROPERTY AGGREGATION: Find ALL buildings in same property
+            # A property (fastighetsbeteckning) can contain multiple addresses
+            # ============================================================
+            property_designation = sweden_building.raw_properties.get('IdFastBet', '')
+            if property_designation:
+                property_buildings = self._find_all_buildings_in_property(property_designation)
+
+                if len(property_buildings) > 1:
+                    # Multiple buildings in property - aggregate data
+                    aggregated = self._aggregate_property_data(property_buildings, sweden_building)
+
+                    # Update BuildingData with property-level aggregated values
+                    data.property_designation = aggregated.get("property_designation", "")
+                    data.property_owner = aggregated.get("property_owner", "")
+                    data.all_addresses = aggregated.get("all_addresses", [data.address])
+                    data.num_buildings = aggregated.get("num_buildings", 1)
+                    data.num_trapphus = aggregated.get("num_trapphus", 1)
+
+                    # Use aggregated totals for the WHOLE property
+                    data.num_apartments = aggregated.get("num_apartments", data.num_apartments)
+                    data.atemp_m2 = aggregated.get("atemp_m2", data.atemp_m2)
+                    data.num_floors = aggregated.get("num_floors", data.num_floors)
+                    data.footprint_area_m2 = aggregated.get("footprint_area_m2", data.footprint_area_m2)
+                    data.construction_year = aggregated.get("construction_year", data.construction_year)
+                    data.energy_class = aggregated.get("energy_class", data.energy_class)
+
+                    # Aggregate energy source kWh
+                    data.district_heating_kwh = aggregated.get("district_heating_kwh", data.district_heating_kwh)
+                    data.exhaust_air_hp_kwh = aggregated.get("exhaust_air_hp_kwh", data.exhaust_air_hp_kwh)
+                    data.ground_source_hp_kwh = aggregated.get("ground_source_hp_kwh", data.ground_source_hp_kwh)
+
+                    # Individual building details for multi-roof solar/facade analysis
+                    data.building_details = aggregated.get("building_details", [])
+
+                    sources.append("property_aggregation")
+                    logger.info(f"✓ Property aggregation: {data.num_buildings} buildings, "
+                                f"{data.num_apartments} apartments, {data.atemp_m2:.0f} m²")
+                else:
+                    # Single building in property
+                    data.property_designation = property_designation
+                    data.property_owner = sweden_building.raw_properties.get('42P_ByggnadsAgare', '')
+                    data.all_addresses = [data.address]
+                    data.num_trapphus = int(sweden_building.raw_properties.get('EgenAntalTrapphus', 1) or 1)
+
             # Try to determine facade material from building type/era
             if sweden_building.construction_year:
                 if sweden_building.construction_year < 1945:
@@ -616,6 +1009,37 @@ class BuildingDataFetcher:
                 else:
                     data.facade_material = "plaster"
 
+            # ============================================================
+            # CHECK BRF DASHBOARD DATABASE for existing Raiden analysis
+            # ============================================================
+            brfdashboard_data = self._check_brfdashboard_for_property(
+                address=address,
+                property_designation=data.property_designation
+            )
+
+            has_existing_raiden_analysis = False
+            if brfdashboard_data:
+                sources.append("brfdashboard")
+
+                # Use existing Raiden analysis if available (skip re-analysis)
+                if brfdashboard_data.get("raiden_facade_material"):
+                    data.facade_material = brfdashboard_data["raiden_facade_material"]
+                    has_existing_raiden_analysis = True
+                    logger.info(f"  ✓ Using cached facade material: {data.facade_material}")
+                if brfdashboard_data.get("raiden_building_form"):
+                    data.building_form = brfdashboard_data["raiden_building_form"]
+                if brfdashboard_data.get("raiden_wwr"):
+                    data.wwr = brfdashboard_data["raiden_wwr"]
+                    has_existing_raiden_analysis = True
+                    logger.info(f"  ✓ Using cached WWR: {data.wwr:.2f}")
+
+                # Use Gripen energy class if available and better confidence
+                if brfdashboard_data.get("energy_class") and brfdashboard_data.get("energy_kwh_m2"):
+                    if brfdashboard_data.get("energy_kwh_m2", 0) > 0:
+                        data.energy_class = brfdashboard_data["energy_class"]
+                        data.declared_energy_kwh_m2 = brfdashboard_data["energy_kwh_m2"]
+                        logger.info(f"  ✓ Using Gripen energy: class {data.energy_class}, {data.declared_energy_kwh_m2:.0f} kWh/m²")
+
             # Override with known data if provided
             if known_data:
                 for key, value in known_data.items():
@@ -624,7 +1048,8 @@ class BuildingDataFetcher:
                 sources.append("user_provided")
 
             # Optionally fetch facade images AND run AI analysis for material detection
-            if fetch_images and self.facade_fetcher:
+            # Skip if we have existing Raiden analysis with high confidence
+            if fetch_images and self.facade_fetcher and not has_existing_raiden_analysis:
                 try:
                     images = self._fetch_facade_images(lat, lon, None)
                     if images:
@@ -1282,6 +1707,10 @@ class AddressPipeline:
                 "footprint_coords": building_data.footprint_coords,
                 "building_width_m": building_data.building_width_m,
                 "building_length_m": building_data.building_length_m,
+                # Multi-building property data (for multi-roof solar analysis)
+                "building_details": building_data.building_details,
+                "property_designation": building_data.property_designation,
+                "all_addresses": building_data.all_addresses,
             }
 
             # Run async analyzer (convert to sync)
@@ -1342,7 +1771,11 @@ class AddressPipeline:
         building_data: BuildingData,
         analysis_results: Any = None,
     ) -> Any:
-        """Generate maintenance plan with cash flow cascade."""
+        """Generate maintenance plan with cash flow cascade.
+
+        Uses ACTUAL ECM simulation results if available, otherwise falls back
+        to hardcoded estimates.
+        """
         try:
             from ..planning import (
                 MaintenancePlan,
@@ -1363,8 +1796,15 @@ class AddressPipeline:
                 peak_fv_kw=building_data.peak_fv_kw,
             )
 
-            # Create ECM candidates (Steg 0-3)
-            candidates = self._create_ecm_candidates(building_data)
+            # TRY to use ACTUAL ECM results from simulation (not hardcoded!)
+            candidates = self._extract_ecm_candidates_from_results(
+                analysis_results, building_data
+            )
+
+            # Fall back to hardcoded candidates only if no simulation results
+            if not candidates:
+                logger.info("No simulation results - using estimated ECM candidates")
+                candidates = self._create_ecm_candidates(building_data)
 
             # Create optimal sequence
             sequencer = ECMSequencer()
@@ -1489,6 +1929,193 @@ class AddressPipeline:
 
         return candidates
 
+    def _extract_ecm_candidates_from_results(
+        self,
+        analysis_results: Any,
+        building_data: BuildingData,
+    ) -> List:
+        """Extract ECM candidates from Snowball Packages (preferred) or raw ECM results.
+
+        CRITICAL FIX (2025-01-06): This function now uses the PACKAGES structure from
+        full_pipeline.py instead of re-processing ecm_results. This ensures the Cash Flow
+        table matches the Steg cards (Package cards) in the report.
+
+        Priority:
+        1. If packages exist → use them directly (preserves Steg 1-3 grouping)
+        2. If no packages → fall back to raw ecm_results processing
+
+        Args:
+            analysis_results: Full pipeline results with ecm_results and packages
+            building_data: Building characteristics for category assignment
+
+        Returns:
+            List of ECMCandidate with actual simulation-based costs/savings
+        """
+        from ..planning import ECMCandidate
+
+        if not analysis_results:
+            return []
+
+        # Get ECM results and packages from simulation
+        ecm_results = analysis_results.get("ecm_results", [])
+        # CRITICAL FIX (2025-01-06): full_pipeline uses "snowball_packages" key, not "packages"
+        packages = analysis_results.get("snowball_packages", []) or analysis_results.get("packages", [])
+
+        candidates = []
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # PRIORITY 1: Use packages if available (ensures Cash Flow matches Steg cards)
+        # ═══════════════════════════════════════════════════════════════════════
+        if packages:
+            logger.info(f"Using {len(packages)} Snowball packages for ECM candidates")
+
+            # Build ECM lookup from ecm_results for cost/savings data
+            ecm_lookup = {ecm.get("ecm_id", ""): ecm for ecm in ecm_results}
+
+            for pkg in packages:
+                # Handle both SnowballPackage dataclasses and dicts
+                if hasattr(pkg, 'package_name'):
+                    # SnowballPackage dataclass from full_pipeline
+                    pkg_name = pkg.package_name
+                    ecm_ids = pkg.ecm_ids
+                    pkg_cost = pkg.total_investment_sek
+                    pkg_payback = pkg.simple_payback_years
+                    pkg_number = pkg.package_number  # Direct steg number!
+                else:
+                    # Dict from cached/serialized data
+                    pkg_name = pkg.get("name", "")
+                    ecm_ids = pkg.get("ecm_ids", [])
+                    pkg_cost = pkg.get("estimated_cost_sek", pkg.get("total_investment_sek", 0))
+                    pkg_payback = pkg.get("simple_payback_years", 99)
+                    pkg_number = pkg.get("package_number", 0)
+
+                # Extract steg number from package_number or package name
+                if pkg_number and pkg_number > 0:
+                    steg = pkg_number
+                else:
+                    # Fallback: Extract from package name (e.g., "Steg 1: Snabba Vinster" → 1)
+                    steg = 1  # Default
+                    if "Steg 1" in pkg_name or "steg 1" in pkg_name.lower():
+                        steg = 1
+                    elif "Steg 2" in pkg_name or "steg 2" in pkg_name.lower():
+                        steg = 2
+                    elif "Steg 3" in pkg_name or "steg 3" in pkg_name.lower():
+                        steg = 3
+                    elif "Steg 0" in pkg_name or "steg 0" in pkg_name.lower():
+                        steg = 0
+
+                # Create ECMCandidate for each ECM in the package
+                for ecm_id in ecm_ids:
+                    # Look up ECM details from ecm_results
+                    ecm_data = ecm_lookup.get(ecm_id, {})
+
+                    investment = ecm_data.get("investment_sek", 0)
+                    annual_savings = ecm_data.get("annual_savings_sek", 0)
+                    payback = ecm_data.get("simple_payback_years", pkg_payback)
+                    ecm_name = ecm_data.get("ecm_name", ecm_id)
+
+                    # For package-level costs, distribute if ECM has no individual cost
+                    if investment == 0 and len(ecm_ids) > 0:
+                        investment = pkg_cost / len(ecm_ids)
+
+                    is_zero_cost = steg == 0 or investment < 50000
+
+                    candidates.append(ECMCandidate(
+                        ecm_id=ecm_id,
+                        name=ecm_name,
+                        investment_sek=investment,
+                        annual_savings_sek=annual_savings,
+                        payback_years=payback,
+                        is_zero_cost=is_zero_cost,
+                        steg=steg,
+                    ))
+
+            logger.info(
+                f"Extracted {len(candidates)} ECM candidates from packages "
+                f"(Steg 0: {sum(1 for c in candidates if c.steg == 0)}, "
+                f"Steg 1: {sum(1 for c in candidates if c.steg == 1)}, "
+                f"Steg 2: {sum(1 for c in candidates if c.steg == 2)}, "
+                f"Steg 3: {sum(1 for c in candidates if c.steg == 3)})"
+            )
+            return candidates
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # FALLBACK: Use raw ecm_results if no packages exist
+        # ═══════════════════════════════════════════════════════════════════════
+        if not ecm_results:
+            return []
+
+        logger.info("No packages found, falling back to raw ecm_results processing")
+
+        # ECM category mapping for steg assignment (fallback only)
+        steg_0_ecms = {
+            "duc_calibration", "heating_curve_adjustment", "night_setback",
+            "effektvakt_optimization", "bms_optimization", "pump_optimization",
+            "ventilation_schedule_optimization", "hot_water_temperature",
+            "dhw_circulation_optimization", "radiator_balancing",
+            "district_heating_optimization",
+        }
+        steg_1_ecms = {
+            "air_sealing", "smart_thermostats", "led_lighting", "led_common_areas",
+            "led_outdoor", "occupancy_sensors", "daylight_sensors", "low_flow_fixtures",
+            "dhw_tank_insulation", "pipe_insulation", "radiator_fans",
+            "entrance_door_replacement",
+        }
+        steg_2_ecms = {
+            "demand_controlled_ventilation", "roof_insulation", "ftx_overhaul",
+            "heat_recovery_dhw", "solar_thermal", "individual_metering",
+            "building_automation_system", "thermal_bridge_remediation",
+            "basement_insulation",
+        }
+
+        for ecm in ecm_results:
+            ecm_id = ecm.get("ecm_id", "")
+            savings_percent = ecm.get("savings_percent", 0)
+
+            # Skip ECMs with no savings or negative savings
+            if savings_percent <= 0:
+                continue
+
+            investment = ecm.get("investment_sek", 0)
+            annual_savings = ecm.get("annual_savings_sek", 0)
+            payback = ecm.get("simple_payback_years", 99)
+
+            # Determine steg based on ECM type AND investment amount
+            if ecm_id in steg_0_ecms or investment < 50000:
+                steg = 0
+                is_zero_cost = True
+            elif ecm_id in steg_1_ecms or investment < 500000:
+                steg = 1
+                is_zero_cost = False
+            elif ecm_id in steg_2_ecms or investment < 2000000:
+                steg = 2
+                is_zero_cost = False
+            else:
+                steg = 3
+                is_zero_cost = False
+
+            ecm_name = ecm.get("ecm_name", ecm_id)
+
+            candidates.append(ECMCandidate(
+                ecm_id=ecm_id,
+                name=ecm_name,
+                investment_sek=investment,
+                annual_savings_sek=annual_savings,
+                payback_years=payback,
+                is_zero_cost=is_zero_cost,
+                steg=steg,
+            ))
+
+        logger.info(
+            f"Extracted {len(candidates)} ECM candidates from ecm_results (fallback) "
+            f"(Steg 0: {sum(1 for c in candidates if c.steg == 0)}, "
+            f"Steg 1: {sum(1 for c in candidates if c.steg == 1)}, "
+            f"Steg 2: {sum(1 for c in candidates if c.steg == 2)}, "
+            f"Steg 3: {sum(1 for c in candidates if c.steg == 3)})"
+        )
+
+        return candidates
+
     def _analyze_effektvakt(self, building_data: BuildingData) -> Any:
         """Analyze effektvakt (peak shaving) potential."""
         try:
@@ -1548,7 +2175,14 @@ class AddressPipeline:
             ReportData,
             MaintenancePlanData,
             EffektvaktData,
+            CalibrationAnomaliesData,
         )
+        # Import calibration anomaly converter if available
+        try:
+            from ..agents import calibration_analysis_to_report_data
+            AGENTIC_AVAILABLE = True
+        except ImportError:
+            AGENTIC_AVAILABLE = False
 
         # Build maintenance plan data for report
         mp_data = None
@@ -1558,6 +2192,7 @@ class AddressPipeline:
                 projections.append({
                     "year": proj.year,
                     "fund_start_sek": proj.fund_start_sek,
+                    "fund_contribution_sek": proj.fund_contribution_sek,  # Annual fund contribution from avgift
                     "investment_sek": proj.renovation_spend_sek + proj.ecm_investment_sek,
                     "energy_savings_sek": proj.energy_savings_sek,
                     "fund_end_sek": proj.fund_end_sek,
@@ -1626,6 +2261,7 @@ class AddressPipeline:
                     ecm_results_list.append(ECMResult(
                         id=ecm.get("ecm_id", "unknown"),
                         name=ecm.get("ecm_name", ecm.get("ecm_id", "Unknown")),
+                        name_sv=ecm.get("name_sv", ecm.get("ecm_name", ecm.get("ecm_id", "Unknown"))),
                         category=ecm.get("category", "Other"),
                         baseline_kwh_m2=baseline_kwh_m2,
                         result_kwh_m2=result_kwh,
@@ -1656,9 +2292,16 @@ class AddressPipeline:
                     savings_kwh = annual_savings / (building_data.atemp_m2 or 1)
                     savings_pct = (savings_kwh / baseline_kwh_m2 * 100) if baseline_kwh_m2 > 0 else 0
 
+                    # Get Swedish name from ECM catalog if available
+                    from ..ecm import get_ecm
+                    ecm_catalog = get_ecm(inv.ecm_id)
+                    fallback_name = getattr(inv, 'name', inv.ecm_id.replace('_', ' ').title())
+                    name_sv = ecm_catalog.name_sv if ecm_catalog else fallback_name
+
                     ecm_results_list.append(ECMResult(
                         id=inv.ecm_id,
-                        name=getattr(inv, 'name', inv.ecm_id.replace('_', ' ').title()),
+                        name=fallback_name,
+                        name_sv=name_sv,
                         category="Estimated",  # Mark as estimated since no simulation
                         baseline_kwh_m2=baseline_kwh_m2,
                         result_kwh_m2=max(0, baseline_kwh_m2 - savings_kwh),
@@ -1731,6 +2374,7 @@ class AddressPipeline:
         # Convert snowball packages to report format
         from ..analysis.package_generator import ECMPackage, ECMPackageItem
         report_packages = []
+        prev_class = ''  # Track previous package's after_energy_class for progressive display
         if analysis_results and "snowball_packages" in analysis_results:
             snowball_pkgs = analysis_results["snowball_packages"]
             for pkg in snowball_pkgs:
@@ -1740,18 +2384,53 @@ class AddressPipeline:
                     # Find the ECM result
                     matching_ecm = next((e for e in ecm_results_list if e.id == ecm_id), None)
                     if matching_ecm:
+                        # Use total_savings_percent (all end-uses) if available, else heating-only
+                        ecm_savings_pct = matching_ecm.total_savings_percent if matching_ecm.total_savings_percent else matching_ecm.savings_percent
+                        # Use Swedish name if available, otherwise English
+                        ecm_name_sv = getattr(matching_ecm, 'name_sv', None) or matching_ecm.name
                         ecm_items.append(ECMPackageItem(
                             id=ecm_id,
                             name=matching_ecm.name,
-                            individual_savings_percent=matching_ecm.savings_percent,
+                            name_sv=ecm_name_sv,
+                            individual_savings_percent=ecm_savings_pct,
                             estimated_cost_sek=matching_ecm.estimated_cost_sek,
                         ))
 
-                # Create ECMPackage
+                # Create ECMPackage with primary energy info
+                # Build description including energy class improvement if available
+                # Use PREVIOUS package's after_class for progressive display
+                display_before_class = prev_class if prev_class else pkg.before_energy_class
+                after_class = pkg.after_energy_class
+
+                # Calculate classes improved from display_before to after
+                class_order = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+                try:
+                    before_idx = class_order.index(display_before_class) if display_before_class else 6
+                    after_idx = class_order.index(after_class) if after_class else 6
+                    classes_improved_display = before_idx - after_idx
+                except ValueError:
+                    classes_improved_display = 0
+
+                # Build description - avoid duplicating "Steg N:" if already in package_name
+                pkg_name = pkg.package_name
+                if pkg_name.startswith(f"Steg {pkg.package_number}"):
+                    desc = pkg_name  # Already has Steg prefix
+                else:
+                    desc = f"Steg {pkg.package_number}: {pkg_name}"
+
+                if display_before_class and after_class:
+                    desc += f" | Energiklass: {display_before_class} → {after_class}"
+                    if classes_improved_display > 0:
+                        desc += f" (+{classes_improved_display})"
+
+                # Update prev_class for next iteration
+                if after_class:
+                    prev_class = after_class
+
                 report_packages.append(ECMPackage(
                     id=f"pkg_{pkg.package_number}",
                     name=pkg.package_name,
-                    description=f"Steg {pkg.package_number}: {pkg.package_name}",
+                    description=desc,
                     ecms=ecm_items,
                     combined_savings_percent=pkg.savings_percent,
                     combined_savings_kwh_m2=pkg.combined_kwh_m2,
@@ -1759,6 +2438,21 @@ class AddressPipeline:
                     simple_payback_years=pkg.simple_payback_years,
                     annual_cost_savings_sek=pkg.annual_savings_sek,
                     co2_reduction_kg_m2=0,  # Not calculated in snowball packages
+                    # Primary energy & energy class (Swedish BBR)
+                    before_primary_kwh_m2=getattr(pkg, 'before_primary_kwh_m2', 0),
+                    after_primary_kwh_m2=getattr(pkg, 'after_primary_kwh_m2', 0),
+                    primary_savings_percent=getattr(pkg, 'primary_savings_percent', 0),
+                    before_energy_class=getattr(pkg, 'before_energy_class', ''),
+                    after_energy_class=getattr(pkg, 'after_energy_class', ''),
+                    classes_improved=getattr(pkg, 'classes_improved', 0),
+                    # Energy progression (total energy)
+                    before_total_kwh_m2=getattr(pkg, 'before_total_kwh_m2', 0),
+                    after_total_kwh_m2=getattr(pkg, 'after_total_kwh_m2', 0),
+                    cumulative_savings_percent=getattr(pkg, 'cumulative_savings_percent', 0),
+                    # Fund-based timing
+                    fund_recommended_year=getattr(pkg, 'fund_recommended_year', 0),
+                    fund_available_sek=getattr(pkg, 'fund_available_sek', 0),
+                    years_to_afford=getattr(pkg, 'years_to_afford', 0),
                 ))
 
         # Get baseline energy breakdown from analysis results
@@ -1772,6 +2466,17 @@ class AddressPipeline:
             baseline_property_el_kwh_m2 = be.get("property_el_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "property_el_kwh_m2", 0)
             baseline_cooling_kwh_m2 = be.get("cooling_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "cooling_kwh_m2", 0)
             baseline_total_kwh_m2 = be.get("total_kwh_m2", 0) if isinstance(be, dict) else getattr(be, "total_kwh_m2", 0)
+
+        # Extract calibration anomalies from Agentic Raiden analysis
+        calibration_anomalies_data = None
+        if analysis_results and AGENTIC_AVAILABLE:
+            calibration_analysis = analysis_results.get("calibration_analysis")
+            if calibration_analysis and hasattr(calibration_analysis, 'has_anomalies'):
+                try:
+                    calibration_anomalies_data = calibration_analysis_to_report_data(calibration_analysis)
+                    logger.info(f"Calibration anomalies: {len(calibration_anomalies_data.anomalies)} anomalies detected")
+                except Exception as e:
+                    logger.warning(f"Failed to convert calibration anomalies: {e}")
 
         # Build report data
         report_data = ReportData(
@@ -1801,6 +2506,8 @@ class AddressPipeline:
             current_fund_sek=building_data.current_fund_sek,
             annual_energy_cost_sek=building_data.annual_energy_cost_sek,
             analysis_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            # Agentic Raiden calibration anomalies
+            calibration_anomalies=calibration_anomalies_data,
         )
 
         # Generate and save report

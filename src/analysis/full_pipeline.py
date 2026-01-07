@@ -15,6 +15,13 @@ This is the REAL pipeline that:
 7. Stores results in database
 """
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, use existing env vars
+
 import asyncio
 import json
 import logging
@@ -22,7 +29,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor
@@ -103,6 +110,9 @@ from ..roi.costs_sweden_v2 import (
     EffektTariff, ELLEVIO_EFFEKTTARIFF, get_effekt_tariff,
     BuildingPeakEstimate, estimate_building_peak_power,
     calculate_ecm_peak_savings, calculate_combined_peak_savings,
+    # Primary energy (for energy class calculation)
+    calculate_primary_energy, get_energy_class, project_energy_class_improvement,
+    get_primary_energy_factor,
 )
 
 # Raiden imports - Planning (Cash Flow & Sequencing)
@@ -114,7 +124,44 @@ from ..planning.models import MaintenancePlan, BRFFinancials
 # Raiden imports - QC Agents
 from ..orchestrator.qc_agent import ImageQCAgent, ECMRefinerAgent, AnomalyAgent, QCTrigger
 
+# Raiden imports - Agentic Raiden (Post-calibration reasoning)
+try:
+    from ..agents.calibration_reasoner import CalibrationReasonerAgent, CalibrationAnalysis
+    from ..agents.context_update import ContextUpdateAgent
+    from ..agents.clarification_agent import ClarificationAgent, create_clarification_agent
+    AGENTIC_RAIDEN_AVAILABLE = True
+except ImportError:
+    AGENTIC_RAIDEN_AVAILABLE = False
+    CalibrationReasonerAgent = None
+    ContextUpdateAgent = None
+    CalibrationAnalysis = None
+    ClarificationAgent = None
+    create_clarification_agent = None
+
 # Raiden imports - Database & Visualization (optional)
+try:
+    from ..db.brfdashboard import (
+        BRFDashboardFetcher,
+        BuildingComplete,
+        BRFEnergyProfile,
+        BRFComplete,  # BRF aggregate data from v_brf_complete
+        get_building_complete,
+        get_brf_energy_profile,
+        get_brf_energy_profile_for_building,
+        get_brf_by_address,  # 2-step query: address → zelda_id → BRF aggregates
+        get_brf_by_name,
+        get_brf_by_location,
+        detect_implemented_ecms,
+    )
+    BRFDASHBOARD_AVAILABLE = True
+except ImportError:
+    BRFDASHBOARD_AVAILABLE = False
+    BRFDashboardFetcher = None
+    BuildingComplete = None
+    BRFEnergyProfile = None
+    BRFComplete = None
+
+# Legacy Supabase import (deprecated - use BRFDashboard instead)
 try:
     from ..db.client import SupabaseClient
     SUPABASE_AVAILABLE = True
@@ -179,6 +226,24 @@ class DataFusionResult:
     existing_solar_production_kwh: float = 0
     remaining_pv_capacity_kwp: float = 0  # NEW: Available for new installation
     has_solar_thermal: bool = False
+
+    # BRF-level aggregated data (from v_brf_energy_profile)
+    # Critical for shared solar installations across multiple buildings in a BRF
+    brf_zelda_id: Optional[str] = None
+    brf_name: Optional[str] = None
+    brf_building_count: int = 0
+    brf_has_solar: bool = False  # True if ANY building in BRF has solar
+    brf_has_heat_pump: bool = False
+    brf_total_solar_pv_kwh: float = 0  # Total production across all buildings
+    brf_existing_solar_kwp: float = 0  # Estimated existing capacity (total_solar_pv_kwh / 900)
+    brf_remaining_roof_kwp: float = 0  # Remaining capacity across entire BRF
+    brf_total_atemp_m2: float = 0  # Total heated area for BRF
+
+    # Property-level building details (for multi-roof solar analysis)
+    # Each dict: {address, lat, lon, footprint_area_m2, height_m, num_floors, atemp_m2}
+    property_building_details: List[Dict[str, Any]] = field(default_factory=list)
+    # Per-building roof analysis results (combined for total PV capacity)
+    per_building_roof_analysis: List[Dict[str, Any]] = field(default_factory=list)
 
     # Flexibility market conditions (for battery ROI) - NEW 2025
     flexibility_market_quality: str = "poor"  # "poor", "moderate", "good"
@@ -251,6 +316,7 @@ class DataFusionResult:
     declaration_version: str = ""
     declaration_date: str = ""
     declaration_year: int = 0  # Year of energy declaration (affects PEF interpretation)
+    energy_class: str = ""  # DECLARED energy class (A-G) from Gripen/energy declaration
 
     # Gripen building reference (for multi-building extraction)
     gripen_building: Optional[Any] = None  # GripenBuilding if available
@@ -655,6 +721,33 @@ class SnowballPackage:
     npv_10yr: float = 0
     irr: float = 0
 
+    # Viability assessment
+    is_viable: bool = True  # Payback <= 30 years
+    viability_warning: str = ""  # Warning message if not viable
+    recommendation: str = ""  # Alternative recommendation for efficient buildings
+
+    # Primary energy & energy class (Swedish BBR)
+    before_primary_kwh_m2: float = 0  # Baseline primary energy
+    after_primary_kwh_m2: float = 0   # After package implementation
+    primary_savings_percent: float = 0  # Primary energy reduction %
+    before_energy_class: str = ""  # Current Swedish energy class (A-G)
+    after_energy_class: str = ""   # Projected energy class after implementation
+    classes_improved: int = 0      # Number of energy classes improved (0-6)
+
+    # Energy progression (total energy including heating + DHW + property_el)
+    before_total_kwh_m2: float = 0  # Total energy before this package
+    after_total_kwh_m2: float = 0   # Total energy after this package
+
+    # Fund-based timing (calculated from BRF cash flow)
+    fund_recommended_year: int = 0  # Actual calendar year (e.g., 2027) based on fund availability
+    fund_available_sek: float = 0   # Estimated fund balance when this package can be afforded
+    years_to_afford: int = 0        # Years from now until fund can afford this package
+
+    # Green loan benefit (grönt lån) - 0.5% lower interest for Energy Class A/B
+    qualifies_for_green_loan: bool = False  # True if package reaches Energy Class A or B
+    green_loan_interest_savings_sek: float = 0  # Total interest savings over loan period
+    adjusted_payback_with_green_loan: float = 0  # Payback including green loan benefit
+
 
 class FullPipelineAnalyzer:
     """
@@ -683,10 +776,10 @@ class FullPipelineAnalyzer:
     ):
         self.google_api_key = google_api_key
         self.mapillary_token = mapillary_token
-        self.weather_dir = weather_dir or Path("tests/fixtures")
-        self.output_dir = output_dir or Path("output_analysis")
+        self.weather_dir = Path(weather_dir) if weather_dir else Path("tests/fixtures")
+        self.output_dir = Path(output_dir) if output_dir else Path("output_analysis")
         self.use_bayesian_calibration = use_bayesian_calibration
-        self.surrogate_cache_dir = surrogate_cache_dir or (self.output_dir / "surrogate_cache")
+        self.surrogate_cache_dir = Path(surrogate_cache_dir) if surrogate_cache_dir else (self.output_dir / "surrogate_cache")
 
         # Initialize components - Data Sources (order matters: local → remote)
         self.sweden_buildings = None  # Loaded lazily (37,489 Stockholm buildings!)
@@ -748,12 +841,28 @@ class FullPipelineAnalyzer:
         self.ecm_refiner_agent = ECMRefinerAgent()
         self.anomaly_agent = AnomalyAgent()
 
-        # Database storage (optional)
-        self.db_client = None
-        if SUPABASE_AVAILABLE:
+        # Database storage - BRF Dashboard (primary) + Supabase (legacy fallback)
+        self.brf_dashboard = None
+        self.db_client = None  # Legacy Supabase client
+
+        # PRIMARY: BRF Dashboard (correct database with v_building_complete, v_brf_energy_profile)
+        if BRFDASHBOARD_AVAILABLE:
+            try:
+                self.brf_dashboard = BRFDashboardFetcher()
+                if self.brf_dashboard.available:
+                    console.print("[green]BRF Dashboard database connected[/green]")
+                else:
+                    logger.debug("BRF Dashboard not configured (no BRFDASHBOARD_DATABASE_URL)")
+                    self.brf_dashboard = None
+            except Exception as e:
+                logger.debug(f"BRF Dashboard not configured: {e}")
+                self.brf_dashboard = None
+
+        # LEGACY FALLBACK: Supabase (old database - deprecated)
+        if SUPABASE_AVAILABLE and self.brf_dashboard is None:
             try:
                 self.db_client = SupabaseClient()
-                console.print("[green]Supabase database connected[/green]")
+                console.print("[yellow]Using legacy Supabase client (BRF Dashboard preferred)[/yellow]")
             except Exception as e:
                 logger.debug(f"Supabase not configured: {e}")
 
@@ -808,6 +917,7 @@ class FullPipelineAnalyzer:
         lon: float = None,
         building_data: Dict = None,
         run_simulations: bool = True,
+        heating_system: str = None,
     ) -> Dict:
         """
         Run complete analysis pipeline.
@@ -817,12 +927,20 @@ class FullPipelineAnalyzer:
             lat, lon: Or provide coordinates directly
             building_data: Or provide pre-fetched building data
             run_simulations: Whether to run EnergyPlus (False for quick test)
+            heating_system: Override detected heating system (e.g., "heat_pump", "district_heating")
+                           Use this when you know the building's heating type but it wasn't detected.
 
         Returns:
             Complete analysis results with snowball packages
         """
         console.print("\n[bold cyan]═══ FULL PIPELINE ANALYSIS ═══[/bold cyan]\n")
         start_time = time.time()
+
+        # Initialize clarification agent for generating questions
+        clarification_agent = None
+        if AGENTIC_RAIDEN_AVAILABLE and create_clarification_agent:
+            analysis_id = f"analysis_{int(start_time)}"
+            clarification_agent = create_clarification_agent(analysis_id=analysis_id)
 
         # Phase 1: Data Fusion
         console.print("[bold]Phase 1: Data Fusion[/bold]")
@@ -844,6 +962,49 @@ class FullPipelineAnalyzer:
         console.print(f"  ✓ Declared: {fusion.declared_kwh_m2} kWh/m²")
         console.print(f"  ✓ Sources: {', '.join(fusion.data_sources)}")
 
+        # Generate clarification questions for data fusion uncertainties
+        if clarification_agent:
+            # Check if energy data is missing
+            if not fusion.declared_kwh_m2 or fusion.declared_kwh_m2 <= 0:
+                clarification_agent.check_energy_data_missing(
+                    has_declaration=False,
+                    estimated_kwh_m2=fusion.estimated_kwh_m2 if hasattr(fusion, 'estimated_kwh_m2') else None
+                )
+
+            # Check construction year confidence
+            year_confidence = getattr(fusion, 'year_confidence', 0.5)
+            if year_confidence < 0.7:
+                clarification_agent.check_construction_year_uncertain(
+                    estimated_year=fusion.construction_year,
+                    confidence=year_confidence
+                )
+
+            # Check WWR detection confidence
+            wwr_confidence = getattr(fusion, 'wwr_confidence', 0.5)
+            if wwr_confidence < 0.6:
+                clarification_agent.check_wwr_detection_low_confidence(
+                    detected_wwr=fusion.detected_wwr.get('average', 0.2) if isinstance(fusion.detected_wwr, dict) else 0.2,
+                    confidence=wwr_confidence
+                )
+
+            # Check Atemp confidence
+            atemp_confidence = getattr(fusion, 'atemp_confidence', 0.5)
+            if atemp_confidence < 0.7:
+                clarification_agent.check_atemp_uncertain(
+                    estimated_atemp=fusion.atemp_m2,
+                    source='energy_declaration' if 'gripen' in fusion.data_sources else 'osm',
+                    confidence=atemp_confidence
+                )
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # HEATING SYSTEM OVERRIDE (if user specified)
+        # For buildings not in database, allow manual specification
+        # ═══════════════════════════════════════════════════════════════════════
+        if heating_system:
+            original_hs = fusion.heating_system
+            fusion.heating_system = heating_system
+            console.print(f"  [yellow]⚡ Heating system override: {original_hs} → {heating_system}[/yellow]")
+
         # Phase 2: Geometry & Context
         console.print("\n[bold]Phase 2: Building Geometry & Context[/bold]")
         geometry = self._build_geometry(fusion)
@@ -852,6 +1013,41 @@ class FullPipelineAnalyzer:
         console.print(f"  ✓ Wall area: {geometry.total_wall_area_m2:.0f} m²")
         console.print(f"  ✓ Roof area: {geometry.roof.total_area_m2:.0f} m²")
         console.print(f"  ✓ Existing measures: {[m.value for m in context.existing_measures]}")
+
+        # Generate clarification questions for building context uncertainties
+        if clarification_agent:
+            # Check heating system confidence
+            heating_confidence = getattr(fusion, 'heating_confidence', 0.5)
+            detected_heating = getattr(fusion, 'heating_system', 'unknown')
+            if heating_confidence < 0.7:
+                clarification_agent.check_heating_system_uncertain(
+                    detected_system=detected_heating,
+                    confidence=heating_confidence
+                )
+
+            # Check ventilation system confidence
+            ventilation_confidence = getattr(fusion, 'ventilation_confidence', 0.5)
+            detected_ventilation = getattr(fusion, 'ventilation_type', 'unknown')
+            if ventilation_confidence < 0.7:
+                clarification_agent.check_ventilation_system_uncertain(
+                    detected_system=detected_ventilation,
+                    confidence=ventilation_confidence
+                )
+
+            # Check for renovation indicators (old building with good energy class)
+            if hasattr(context, 'renovation_detected') and context.renovation_detected:
+                clarification_agent.check_renovation_history(
+                    renovation_detected=True,
+                    indicators=getattr(context, 'renovation_indicators', [])
+                )
+
+            # Check solar detection confidence
+            solar_confidence = getattr(fusion, 'solar_confidence', 0.5)
+            if solar_confidence < 0.7:
+                clarification_agent.check_existing_solar(
+                    detected=fusion.existing_solar_kwp > 0,
+                    confidence=solar_confidence
+                )
 
         # Estimate peak power (for effekttariff calculations)
         building_peak = estimate_building_peak_power(
@@ -899,6 +1095,63 @@ class FullPipelineAnalyzer:
                 # Continue with declared energy - allows ECM estimation without simulation
         else:
             console.print(f"  ⊘ Simulations disabled, using declared: {calibrated_kwh_m2} kWh/m²")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Phase 3.5: Agentic Calibration Analysis
+        # Analyze calibration results vs archetype expectations
+        # This creates the feedback loop: calibration → reasoning → context update
+        # ═══════════════════════════════════════════════════════════════════════
+        calibration_analysis = None
+        if calibration_result and AGENTIC_RAIDEN_AVAILABLE and hasattr(context, 'archetype'):
+            try:
+                console.print("\n[bold]Phase 3.5: Calibration Analysis (Agentic)[/bold]")
+
+                # Get archetype for comparison
+                archetype = context.archetype
+
+                # Run CalibrationReasonerAgent
+                reasoner = CalibrationReasonerAgent()
+                calibration_analysis = reasoner.analyze(
+                    calibration_result=calibration_result,
+                    archetype=archetype,
+                    building_context=context,
+                )
+
+                if calibration_analysis.has_anomalies:
+                    console.print(f"  [yellow]⚠ {len(calibration_analysis.anomalies)} anomalies detected[/yellow]")
+                    for anomaly in calibration_analysis.anomalies:
+                        severity_color = {
+                            'high': 'red',
+                            'medium': 'yellow',
+                            'low': 'cyan',
+                        }.get(anomaly.severity.value, 'white')
+                        console.print(
+                            f"    [{severity_color}]• {anomaly.parameter}: "
+                            f"{anomaly.deviation_percent:+.0f}% vs expected[/{severity_color}]"
+                        )
+
+                    # Run ContextUpdateAgent to feed insights back
+                    updater = ContextUpdateAgent()
+                    context, update_summary = updater.update_from_calibration(context, calibration_analysis)
+
+                    console.print(f"  ✓ Context updated with calibration insights")
+                    if update_summary.quality_flags_added:
+                        console.print(f"    Flags: {', '.join(update_summary.quality_flags_added)}")
+                    if update_summary.ecm_priorities_changed:
+                        console.print(f"    ECM priorities adjusted: {list(update_summary.ecm_priorities_changed.keys())}")
+
+                    if calibration_analysis.requires_investigation:
+                        console.print(f"  [red]⚠ HIGH severity anomalies - on-site inspection recommended[/red]")
+
+                    # Generate clarification questions for anomalies
+                    if clarification_agent:
+                        clarification_agent.check_anomaly_verification(calibration_analysis.anomalies)
+                else:
+                    console.print("  ✓ Calibration matches archetype expectations (no anomalies)")
+
+            except Exception as e:
+                logger.warning(f"Agentic calibration analysis failed: {e}", exc_info=True)
+                console.print(f"  [yellow]⚠ Calibration analysis skipped: {e}[/yellow]")
 
         # ═══════════════════════════════════════════════════════════════════════
         # Create baseline energy breakdown (all end-uses: heating, DHW, property_el)
@@ -1035,6 +1288,7 @@ class FullPipelineAnalyzer:
             calibrated_kwh_m2,
             run_simulations and baseline_idf is not None,
             baseline_idf,
+            baseline_energy,  # Full energy breakdown for primary energy calculations
         )
 
         for pkg in packages:
@@ -1043,6 +1297,12 @@ class FullPipelineAnalyzer:
             console.print(f"    Investment: {pkg.total_investment_sek:,.0f} SEK")
             console.print(f"    Incremental: +{pkg.savings_percent:.1f}% | Cumulative: {pkg.cumulative_savings_percent:.1f}% → {pkg.combined_kwh_m2:.1f} kWh/m²")
             console.print(f"    Payback: {pkg.simple_payback_years:.1f} years")
+            # Show primary energy and energy class improvement
+            if pkg.before_energy_class and pkg.after_energy_class:
+                class_change = f"{pkg.before_energy_class} → {pkg.after_energy_class}"
+                if pkg.classes_improved > 0:
+                    class_change += f" (+{pkg.classes_improved} klass{'er' if pkg.classes_improved > 1 else ''})"
+                console.print(f"    Primärenergi: {pkg.before_primary_kwh_m2:.0f} → {pkg.after_primary_kwh_m2:.0f} kWh/m² ({class_change})")
 
         # ═══════════════════════════════════════════════════════════════════════
         # Phase 7: Long-term Cash Flow & ECM Sequencing (BRF Planning)
@@ -1181,6 +1441,10 @@ class FullPipelineAnalyzer:
             "baseline_energy": baseline_energy.to_dict() if baseline_energy else None,
             # Facade material - expose at top level for easier access
             "facade_material": fusion.detected_material,
+            # Agentic Raiden calibration analysis (if available)
+            "calibration_analysis": calibration_analysis,
+            # Clarification questions for iterative improvement
+            "clarification_set": clarification_agent.get_clarification_set() if clarification_agent else None,
         }
 
         # Add long-term planning results
@@ -1273,12 +1537,32 @@ class FullPipelineAnalyzer:
                     "declared_kwh_m2": fusion.declared_kwh_m2,
                     "heating_system": fusion.heating_system,
                     "ventilation_system": fusion.ventilation_system,
+                    "facade_material": fusion.detected_material,
+                    "energy_class": getattr(fusion, 'energy_class', None),
                     "data_sources": fusion.data_sources,
                     "confidence": fusion.confidence,
+                    "archetype_id": context.archetype.name if context and context.archetype else None,
                     "num_ecms_analyzed": len(ecm_results),
                     "num_packages": len(packages),
                     "total_savings_potential_sek": sum(p.annual_savings_sek for p in packages),
                     "analysis_timestamp": datetime.now().isoformat(),
+                    # ECM results - already list of dicts from _run_ecm_simulations
+                    "ecm_results": ecm_results,
+                    # Packages - convert SnowballPackage dataclasses to dicts
+                    "packages": [
+                        {
+                            "name": pkg.package_name,
+                            "ecm_ids": pkg.ecm_ids,
+                            "total_savings_kwh_m2": pkg.combined_kwh_m2,
+                            "total_savings_percent": pkg.savings_percent,
+                            "estimated_cost_sek": pkg.total_investment_sek,
+                            "simple_payback_years": pkg.simple_payback_years,
+                            "is_viable": pkg.is_viable,
+                            "viability_warning": pkg.viability_warning,
+                            "recommendation": pkg.recommendation,
+                        }
+                        for pkg in packages
+                    ],
                 }
 
                 # Store to buildings table
@@ -1317,6 +1601,18 @@ class FullPipelineAnalyzer:
                 logger.warning(f"3D visualization failed: {e}")
                 console.print(f"  [yellow]3D visualization skipped: {e}[/yellow]")
 
+        # Print clarification questions summary
+        if clarification_agent and clarification_agent.questions:
+            cs = clarification_agent.get_clarification_set()
+            high_count = sum(1 for q in cs.questions if q.priority.value == "high")
+            medium_count = sum(1 for q in cs.questions if q.priority.value == "medium")
+            console.print(f"\n[bold magenta]❓ Clarification Questions: {len(cs.questions)}[/bold magenta]")
+            if high_count:
+                console.print(f"  [red]• {high_count} high priority[/red]")
+            if medium_count:
+                console.print(f"  [yellow]• {medium_count} medium priority[/yellow]")
+            console.print(f"  [dim]Answer questions in the report to improve accuracy.[/dim]")
+
         return result
 
     async def _fetch_all_data(
@@ -1340,6 +1636,210 @@ class FullPipelineAnalyzer:
             lat, lon = await self._geocode(address)
 
         fusion = DataFusionResult(address=address or "", lat=lat, lon=lon)
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 0: BRF DASHBOARD DATABASE (CORRECT database with v_building_complete + v_brf_energy_profile)
+        # This is the authoritative source with curated BRF data, solar tracking, etc.
+        # ═══════════════════════════════════════════════════════════════════════
+        brf_building: Optional[BuildingComplete] = None
+        brf_profile: Optional[BRFEnergyProfile] = None
+
+        if self.brf_dashboard and self.brf_dashboard.available and address:
+            try:
+                # Query v_building_complete for building-level data
+                brf_building = self.brf_dashboard.get_building_complete(address=address)
+
+                if brf_building:
+                    console.print(f"  [green]✓ Found in BRF Dashboard: {brf_building.address}[/green]")
+                    fusion.data_sources.append("brf_dashboard")
+
+                    # Extract fields from BRF Dashboard (curated data takes priority!)
+                    if brf_building.construction_year:
+                        fusion.construction_year = brf_building.construction_year
+                    if brf_building.atemp_m2:
+                        fusion.atemp_m2 = brf_building.atemp_m2
+                    if brf_building.footprint_area_m2:
+                        fusion.footprint_area_m2 = brf_building.footprint_area_m2
+                    if brf_building.height_m:
+                        fusion.height_m = brf_building.height_m
+                        fusion.height_source = "brf_dashboard"
+                        fusion.height_confidence = 0.90
+                    if brf_building.num_floors:
+                        fusion.floors = brf_building.num_floors
+                        fusion.floors_source = "brf_dashboard"
+                        fusion.floors_confidence = 0.90
+
+                    # Heating system (curated - highest priority!)
+                    primary_heating = brf_building.get_primary_heating()
+                    if primary_heating and primary_heating != "unknown":
+                        fusion.heating_system = primary_heating
+                        fusion._heating_from_supabase = True  # Curated data flag
+                        console.print(f"  [green]✓ Heating from BRF Dashboard: {fusion.heating_system}[/green]")
+
+                    # Ventilation
+                    if brf_building.ventilation_type:
+                        fusion.ventilation_system = brf_building.ventilation_type
+                    if brf_building.has_ftx:
+                        fusion.has_ftx = True
+                        fusion.ventilation_system = "ftx"
+
+                    # Building metadata
+                    if brf_building.num_apartments:
+                        fusion.num_apartments = brf_building.num_apartments
+                    if brf_building.energy_class:
+                        fusion.energy_class = brf_building.energy_class
+                    if brf_building.declared_energy_kwh_m2:
+                        fusion.declared_kwh_m2 = brf_building.declared_energy_kwh_m2
+
+                    # Solar data (building-level)
+                    if brf_building.has_solar_pv:
+                        fusion.existing_solar_production_kwh = brf_building.solar_pv_kwh or 0
+                        fusion.existing_solar_kwp = fusion.existing_solar_production_kwh / 900 if fusion.existing_solar_production_kwh else 0
+
+                    # Energy breakdown
+                    if brf_building.district_heating_kwh:
+                        fusion.district_heating_kwh = brf_building.district_heating_kwh
+                    if brf_building.ground_source_hp_kwh:
+                        fusion.ground_source_hp_kwh = brf_building.ground_source_hp_kwh
+                    if brf_building.exhaust_air_hp_kwh:
+                        fusion.exhaust_air_hp_kwh = brf_building.exhaust_air_hp_kwh
+
+                    # BRF-level data (for shared solar installations)
+                    # CRITICAL: Use v_brf_complete for aggregate data (total_atemp_sqm, NOT building atemp_m2!)
+                    brf_complete: Optional[BRFComplete] = None
+
+                    # First try: 2-step query via address → zelda_id → BRF aggregates
+                    if BRFDASHBOARD_AVAILABLE and address:
+                        brf_complete = self.brf_dashboard.get_brf_by_address(address)
+
+                    # Fallback: Use zelda_id from building if direct address lookup failed
+                    if not brf_complete and brf_building.zelda_id:
+                        brf_complete = self.brf_dashboard.get_brf_complete(zelda_id=brf_building.zelda_id)
+
+                    if brf_complete:
+                        # BRF aggregate data from v_brf_complete
+                        fusion.brf_zelda_id = brf_complete.zelda_id
+                        fusion.brf_name = brf_complete.brf_name
+                        fusion.brf_building_count = brf_complete.building_count
+                        fusion.brf_has_solar = brf_complete.has_solar_pv
+                        fusion.brf_has_heat_pump = brf_complete.has_heat_pump
+                        fusion.brf_total_solar_pv_kwh = brf_complete.total_solar_pv_kwh or 0
+                        fusion.brf_existing_solar_kwp = brf_complete.estimated_solar_capacity_kwp()
+                        fusion.brf_remaining_roof_kwp = brf_complete.estimated_remaining_roof_kwp()
+                        # CRITICAL FIX: Use total_atemp_sqm from v_brf_complete (ALL buildings)
+                        # NOT atemp_m2 from v_building_complete (single building)
+                        fusion.brf_total_atemp_m2 = brf_complete.total_atemp_sqm or 0
+
+                        console.print(f"  [cyan]✓ BRF aggregates: {brf_complete.brf_name} ({brf_complete.building_count} buildings, {fusion.brf_total_atemp_m2:,.0f} m² total)[/cyan]")
+
+                        if brf_complete.has_solar_pv:
+                            console.print(f"  [cyan]✓ BRF solar: {brf_complete.buildings_with_solar}/{brf_complete.building_count} buildings ({fusion.brf_existing_solar_kwp:.1f} kWp total)[/cyan]")
+
+                    elif brf_building.zelda_id:
+                        # Fallback to v_brf_energy_profile (legacy, less complete)
+                        brf_profile = self.brf_dashboard.get_brf_energy_profile(zelda_id=brf_building.zelda_id)
+                        if brf_profile:
+                            fusion.brf_zelda_id = brf_profile.zelda_id
+                            fusion.brf_name = brf_profile.brf_name
+                            fusion.brf_building_count = brf_profile.building_count
+                            fusion.brf_has_solar = brf_profile.brf_has_solar
+                            fusion.brf_has_heat_pump = brf_profile.brf_has_heat_pump
+                            fusion.brf_total_solar_pv_kwh = brf_profile.total_solar_pv_kwh or 0
+                            fusion.brf_existing_solar_kwp = brf_profile.estimated_solar_capacity_kwp()
+                            fusion.brf_remaining_roof_kwp = brf_profile.estimated_remaining_roof_kwp()
+                            fusion.brf_total_atemp_m2 = brf_profile.total_atemp_m2 or 0
+
+                            console.print(f"  [yellow]⚠ Using v_brf_energy_profile (v_brf_complete not found)[/yellow]")
+                            if brf_profile.brf_has_solar:
+                                console.print(f"  [cyan]✓ BRF-level solar: {brf_profile.buildings_with_solar}/{brf_profile.building_count} buildings have solar ({fusion.brf_existing_solar_kwp:.1f} kWp total)[/cyan]")
+
+            except Exception as e:
+                logger.debug(f"BRF Dashboard lookup failed: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # FALLBACK: Try BRF name search when building address lookup fails
+        # E.g., "Sjöstadspiren 10" → search for BRF "Sjöstadspiren"
+        # ═══════════════════════════════════════════════════════════════════════
+        if not fusion.brf_zelda_id and self.brf_dashboard and self.brf_dashboard.available and address:
+            try:
+                # Extract potential BRF name from address (first word before number)
+                import re
+                # Match patterns like "Sjöstadspiren 10" → "Sjöstadspiren"
+                brf_name_match = re.match(r'^([A-Za-zÅÄÖåäö]+)', address)
+                if brf_name_match:
+                    potential_brf_name = brf_name_match.group(1)
+                    if len(potential_brf_name) >= 4:  # Avoid short strings
+                        console.print(f"  [dim]Trying BRF name search: {potential_brf_name}[/dim]")
+                        brf_complete = self.brf_dashboard.get_brf_by_name(potential_brf_name)
+
+                        if brf_complete:
+                            # Found BRF by name!
+                            fusion.brf_zelda_id = brf_complete.zelda_id
+                            fusion.brf_name = brf_complete.brf_name
+                            fusion.brf_building_count = brf_complete.building_count
+                            fusion.brf_has_solar = brf_complete.has_solar_pv
+                            fusion.brf_has_heat_pump = brf_complete.has_heat_pump
+                            fusion.brf_total_solar_pv_kwh = brf_complete.total_solar_pv_kwh or 0
+                            fusion.brf_existing_solar_kwp = brf_complete.estimated_solar_capacity_kwp()
+                            fusion.brf_remaining_roof_kwp = brf_complete.estimated_remaining_roof_kwp()
+                            fusion.brf_total_atemp_m2 = brf_complete.total_atemp_sqm or 0
+
+                            console.print(f"  [cyan]✓ BRF found by name: {brf_complete.brf_name} ({brf_complete.building_count} buildings, {fusion.brf_total_atemp_m2:,.0f} m² total)[/cyan]")
+                            fusion.data_sources.append("brf_dashboard")
+
+                            if brf_complete.has_solar_pv:
+                                console.print(f"  [cyan]✓ BRF solar: {brf_complete.buildings_with_solar}/{brf_complete.building_count} buildings ({fusion.brf_existing_solar_kwp:.1f} kWp total)[/cyan]")
+            except Exception as e:
+                logger.debug(f"BRF name search failed: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # LEGACY FALLBACK: Supabase (only if BRF Dashboard not available)
+        # ═══════════════════════════════════════════════════════════════════════
+        if not brf_building and self.db_client and address:
+            try:
+                # Try legacy Supabase client
+                supabase_building = self.db_client.get_building_by_address(address)
+
+                if supabase_building:
+                    console.print(f"  [yellow]✓ Found in legacy Supabase: {supabase_building.get('address')}[/yellow]")
+                    fusion.data_sources.append("supabase")
+
+                    # Extract fields from legacy Supabase
+                    if supabase_building.get('construction_year'):
+                        fusion.construction_year = supabase_building['construction_year']
+                    if supabase_building.get('heated_area_m2'):
+                        fusion.atemp_m2 = supabase_building['heated_area_m2']
+                    if supabase_building.get('heating_system'):
+                        hs = supabase_building['heating_system'].lower()
+                        if 'värmepump' in hs or 'heat_pump' in hs or 'bergvärme' in hs:
+                            if 'mark' in hs or 'berg' in hs or 'ground' in hs:
+                                fusion.heating_system = 'ground_source_heat_pump'
+                            elif 'frånluft' in hs or 'exhaust' in hs:
+                                fusion.heating_system = 'exhaust_air_heat_pump'
+                            elif 'luft' in hs or 'air' in hs:
+                                fusion.heating_system = 'air_source_heat_pump'
+                            else:
+                                fusion.heating_system = 'heat_pump'
+                            console.print(f"  [green]✓ Heat pump detected from name: {supabase_building['heating_system']} → {fusion.heating_system}[/green]")
+                        else:
+                            fusion.heating_system = supabase_building['heating_system']
+                        fusion._heating_from_supabase = True
+            except Exception as e:
+                logger.debug(f"Legacy Supabase lookup failed: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 0: Use building_details from address_pipeline if available
+        # This contains multi-building property data already processed
+        # ═══════════════════════════════════════════════════════════════════════
+        if existing_data and existing_data.get("building_details"):
+            building_details = existing_data["building_details"]
+            if len(building_details) > 1:
+                console.print(f"  [cyan]Using {len(building_details)} buildings from property data[/cyan]")
+                fusion.property_building_details = building_details
+                if existing_data.get("property_designation"):
+                    fusion._property_designation = existing_data["property_designation"]
+                if existing_data.get("all_addresses"):
+                    fusion._all_addresses = existing_data["all_addresses"]
 
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 1: Sweden Buildings GeoJSON (RICHEST source - try FIRST!)
@@ -1376,17 +1876,101 @@ class FullPipelineAnalyzer:
             props = swedish_building.raw_properties  # Access all 167 raw properties
 
             # ═══════════════════════════════════════════════════════════════════
-            # BASIC BUILDING INFO
+            # PROPERTY AGGREGATION: Find ALL buildings in same property
+            # A property (fastighetsbeteckning) can contain multiple buildings
+            # This is critical for multi-roof solar analysis and BRF-level data
             # ═══════════════════════════════════════════════════════════════════
+            property_designation = props.get('IdFastBet', '')
+            if property_designation and self.sweden_buildings:
+                # Find all buildings with same fastighetsbeteckning
+                all_buildings = self.sweden_buildings._buildings
+                property_buildings = [
+                    b for b in all_buildings
+                    if b.raw_properties.get('IdFastBet') == property_designation
+                ]
+
+                if len(property_buildings) > 1:
+                    console.print(f"  [cyan]Found {len(property_buildings)} buildings in property '{property_designation}'[/cyan]")
+
+                    # De-duplicate by address
+                    unique_buildings = {}
+                    for b in property_buildings:
+                        addr = b.address
+                        if addr and addr not in unique_buildings:
+                            unique_buildings[addr] = b
+
+                    buildings_list = list(unique_buildings.values())
+                    console.print(f"  [cyan]De-duplicated to {len(buildings_list)} unique addresses[/cyan]")
+
+                    # Aggregate data across all buildings
+                    total_apartments = sum(b.num_apartments or 0 for b in buildings_list)
+                    total_atemp = sum(b.atemp_m2 or 0 for b in buildings_list)
+                    total_footprint = sum(b.footprint_area_m2 or 0 for b in buildings_list)
+                    total_trapphus = sum(b.raw_properties.get('EgenAntalTrapphus', 0) or 0 for b in buildings_list)
+                    max_floors = max((b.num_floors or 0 for b in buildings_list), default=0)
+
+                    # Aggregate energy consumption
+                    total_district_heating = sum(b.district_heating_kwh or 0 for b in buildings_list)
+                    total_exhaust_hp = sum(b.exhaust_air_hp_kwh or 0 for b in buildings_list)
+                    total_ground_hp = sum(b.ground_source_hp_kwh or 0 for b in buildings_list)
+
+                    console.print(f"  [green]✓ Property aggregated: {len(buildings_list)} buildings, {total_apartments:.0f} apartments, {total_atemp:.0f} m²[/green]")
+
+                    # Store individual building details for multi-roof solar analysis
+                    building_details = []
+                    for b in buildings_list:
+                        # Get centroid coordinates in WGS84 (lat, lon)
+                        # SwedishBuilding stores SWEREF99 TM coordinates, need to convert
+                        bld_lat, bld_lon = None, None
+                        try:
+                            centroid = b.get_centroid_wgs84()
+                            if centroid and centroid[0] != 0 and centroid[1] != 0:
+                                bld_lat, bld_lon = centroid[0], centroid[1]
+                        except Exception:
+                            pass
+
+                        building_details.append({
+                            "address": b.address,
+                            "lat": bld_lat,
+                            "lon": bld_lon,
+                            "footprint_area_m2": b.footprint_area_m2 or 0,
+                            "height_m": b.height_m,
+                            "num_floors": b.num_floors,
+                            "atemp_m2": b.atemp_m2 or 0,
+                        })
+
+                    # Store for multi-roof solar analysis
+                    fusion.property_building_details = building_details
+                    fusion._property_designation = property_designation
+
+                    # Use aggregated values (will be refined below)
+                    fusion.num_apartments = int(total_apartments)
+                    fusion.atemp_m2 = total_atemp
+                    fusion.footprint_area_m2 = total_footprint
+                    fusion.num_staircases = int(total_trapphus)
+
+                    # Store aggregated energy breakdown
+                    fusion.district_heating_kwh = total_district_heating
+                    fusion.exhaust_air_hp_kwh = total_exhaust_hp
+                    fusion.ground_source_hp_kwh = total_ground_hp
+
+            # ═══════════════════════════════════════════════════════════════════
+            # BASIC BUILDING INFO (skip if property aggregation already set these)
+            # ═══════════════════════════════════════════════════════════════════
+            has_property_aggregation = len(fusion.property_building_details) > 1
             fusion.construction_year = swedish_building.construction_year or 0
             fusion.renovation_year = int(props.get('43S_TILLBYAR') or props.get('43T_TILLBYAR') or 0)
-            fusion.atemp_m2 = swedish_building.atemp_m2 or 0
+            if not has_property_aggregation:
+                fusion.atemp_m2 = swedish_building.atemp_m2 or 0
             fusion.declared_kwh_m2 = swedish_building.energy_performance_kwh_m2 or 0
-            fusion.num_apartments = int(swedish_building.num_apartments or 0)
+            fusion.energy_class = swedish_building.energy_class or ""  # DECLARED class from energy declaration
+            if not has_property_aggregation:
+                fusion.num_apartments = int(swedish_building.num_apartments or 0)
             fusion.floors = int(swedish_building.num_floors or 0)
             fusion.basement_floors = int(props.get('EgenAntalKallarplan') or 0)
-            fusion.num_staircases = int(props.get('EgenAntalTrapphus') or 0)
-            fusion.footprint_area_m2 = swedish_building.footprint_area_m2 or 0
+            if not has_property_aggregation:
+                fusion.num_staircases = int(props.get('EgenAntalTrapphus') or 0)
+                fusion.footprint_area_m2 = swedish_building.footprint_area_m2 or 0
 
             # Height with source tracking
             if swedish_building.height_m and swedish_building.height_m > 0:
@@ -1470,7 +2054,8 @@ class FullPipelineAnalyzer:
             # ═══════════════════════════════════════════════════════════════════
             # HEATING SYSTEM DETAILS (kWh by source)
             # ═══════════════════════════════════════════════════════════════════
-            if swedish_building.get_primary_heating():
+            # Don't overwrite if already set from Supabase (curated data)
+            if swedish_building.get_primary_heating() and not getattr(fusion, '_heating_from_supabase', False):
                 fusion.heating_system = swedish_building.get_primary_heating()
 
             # Detailed heating breakdown (UPPV = space heating, VV = hot water)
@@ -1604,6 +2189,7 @@ class FullPipelineAnalyzer:
                     fusion.construction_year = gripen_building.construction_year or 0
                     fusion.atemp_m2 = gripen_building.atemp_m2 or 0
                     fusion.declared_kwh_m2 = gripen_building.specific_energy_kwh_m2 or 0
+                    fusion.energy_class = gripen_building.energy_class or ""  # DECLARED class
                     fusion.num_apartments = gripen_building.num_apartments or 0
 
                     # Floor count with source tracking (Gripen is official data!)
@@ -1639,18 +2225,19 @@ class FullPipelineAnalyzer:
                     elif gripen_building.has_f_only:
                         fusion.has_ftx = False
 
-                    # Heating system
-                    if gripen_building.has_district_heating:
-                        fusion.heating_system = "district_heating"
-                        fusion.district_heating_kwh = gripen_building.district_heating_kwh or 0
-                    elif gripen_building.has_heat_pump:
-                        fusion.heating_system = "heat_pump"
-                        fusion.ground_source_hp_kwh = gripen_building.ground_source_hp_kwh or 0
-                        fusion.exhaust_air_hp_kwh = gripen_building.exhaust_air_hp_kwh or 0
-                        fusion.has_heat_pump = True
-                    elif gripen_building.electric_heating_kwh and gripen_building.electric_heating_kwh > 0:
-                        fusion.heating_system = "electric"
-                        fusion.electric_heating_kwh = gripen_building.electric_heating_kwh
+                    # Heating system - don't overwrite if already set from Supabase (curated data)
+                    if not getattr(fusion, '_heating_from_supabase', False):
+                        if gripen_building.has_district_heating:
+                            fusion.heating_system = "district_heating"
+                            fusion.district_heating_kwh = gripen_building.district_heating_kwh or 0
+                        elif gripen_building.has_heat_pump:
+                            fusion.heating_system = "heat_pump"
+                            fusion.ground_source_hp_kwh = gripen_building.ground_source_hp_kwh or 0
+                            fusion.exhaust_air_hp_kwh = gripen_building.exhaust_air_hp_kwh or 0
+                            fusion.has_heat_pump = True
+                        elif gripen_building.electric_heating_kwh and gripen_building.electric_heating_kwh > 0:
+                            fusion.heating_system = "electric"
+                            fusion.electric_heating_kwh = gripen_building.electric_heating_kwh
 
                     # Solar
                     if gripen_building.has_solar:
@@ -1816,9 +2403,22 @@ class FullPipelineAnalyzer:
             # Always try to get facade images for AI analysis
             futures["mapillary"] = executor.submit(self._fetch_mapillary, lat, lon)
 
-            # Google Solar for roof analysis
+            # Google Solar for roof analysis - analyze ALL roofs in property
             if self.google_api_key:
-                futures["google_solar"] = executor.submit(self._fetch_google_solar, lat, lon)
+                # Check if we have multiple buildings in property
+                if fusion.property_building_details and len(fusion.property_building_details) > 1:
+                    # Multi-building property: query each roof
+                    console.print(f"  [cyan]Analyzing {len(fusion.property_building_details)} roofs in property...[/cyan]")
+                    for i, bld in enumerate(fusion.property_building_details):
+                        bld_lat = bld.get("lat")
+                        bld_lon = bld.get("lon")
+                        if bld_lat and bld_lon:
+                            futures[f"google_solar_{i}"] = executor.submit(
+                                self._fetch_google_solar, bld_lat, bld_lon
+                            )
+                else:
+                    # Single building: use primary coordinates
+                    futures["google_solar"] = executor.submit(self._fetch_google_solar, lat, lon)
 
             for source, future in futures.items():
                 try:
@@ -1836,18 +2436,106 @@ class FullPipelineAnalyzer:
         # - Multiple pitch angles (ground floor, middle, upper = 3 levels)
         # - Historical imagery (3+ years) for higher confidence
         # - Total: 4 directions × 3 positions × 3 pitches × ~3 years = 36+ images
+        # For multi-building properties: analyze each building separately
         # ═══════════════════════════════════════════════════════════════════════
         if self.streetview_fetcher and fusion.footprint_geojson:
             try:
-                console.print("  [cyan]Fetching Google Street View facades (36+ multi-angle images)...[/cyan]")
-                wwr, material, confidence, ground_floor, height_est = self._fetch_streetview_facades(
-                    fusion.footprint_geojson,
-                    use_multi_image=True,
-                    use_sam_crop=True,
-                    images_per_facade=3,  # 3 positions per facade × 4 directions = 12 base images
-                    use_historical=True,   # Add historical imagery for higher confidence
-                    historical_years=3,    # 3 years × 12 base = potentially 48 images
-                )
+                # Multi-building property: analyze facades for EACH building
+                if fusion.property_building_details and len(fusion.property_building_details) > 1:
+                    console.print(f"  [cyan]Fetching facades for {len(fusion.property_building_details)} buildings in property...[/cyan]")
+
+                    all_wwr_values = []  # Collect WWR from all buildings
+                    all_materials = []    # Collect materials for voting
+                    per_building_facades = []  # Store per-building results
+
+                    for i, bld in enumerate(fusion.property_building_details):
+                        bld_lat = bld.get("lat")
+                        bld_lon = bld.get("lon")
+                        bld_addr = bld.get("address", f"Building {i+1}")
+
+                        if bld_lat and bld_lon:
+                            # Create a simple square footprint around the building centroid
+                            # (actual footprint would be better but may not be available)
+                            size = 0.0002  # ~20m in lat/lon
+                            bld_footprint = {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [bld_lon - size, bld_lat - size],
+                                    [bld_lon + size, bld_lat - size],
+                                    [bld_lon + size, bld_lat + size],
+                                    [bld_lon - size, bld_lat + size],
+                                    [bld_lon - size, bld_lat - size],
+                                ]]
+                            }
+
+                            try:
+                                bld_wwr, bld_material, bld_conf, bld_gf, bld_height = self._fetch_streetview_facades(
+                                    bld_footprint,
+                                    use_multi_image=True,
+                                    use_sam_crop=True,
+                                    images_per_facade=2,  # Fewer per building since we have multiple
+                                    use_historical=True,
+                                    historical_years=2,
+                                )
+
+                                per_building_facades.append({
+                                    "address": bld_addr,
+                                    "wwr": bld_wwr,
+                                    "material": bld_material,
+                                    "confidence": bld_conf,
+                                    "ground_floor": bld_gf,
+                                })
+
+                                if bld_wwr:
+                                    all_wwr_values.append(bld_wwr)
+                                if bld_material != "unknown":
+                                    all_materials.append((bld_material, bld_conf))
+
+                                console.print(f"    [cyan]✓ {bld_addr}: WWR={bld_wwr}, material={bld_material}[/cyan]")
+
+                            except Exception as bld_e:
+                                logger.warning(f"Failed to fetch facades for {bld_addr}: {bld_e}")
+
+                    # Aggregate WWR across all buildings (average per direction)
+                    if all_wwr_values:
+                        aggregated_wwr = {}
+                        for direction in ['N', 'S', 'E', 'W']:
+                            dir_values = [w.get(direction, 0) for w in all_wwr_values if w.get(direction)]
+                            if dir_values:
+                                aggregated_wwr[direction] = sum(dir_values) / len(dir_values)
+                        wwr = aggregated_wwr if aggregated_wwr else all_wwr_values[0]
+                    else:
+                        wwr = None
+
+                    # Vote on material across all buildings
+                    if all_materials:
+                        from collections import defaultdict
+                        mat_votes = defaultdict(float)
+                        for mat, conf in all_materials:
+                            mat_votes[mat] += conf
+                        material = max(mat_votes, key=mat_votes.get)
+                        confidence = mat_votes[material] / len(all_materials)
+                    else:
+                        material = "unknown"
+                        confidence = 0.0
+
+                    # Use first building's ground floor and height (they should be similar)
+                    ground_floor = per_building_facades[0].get("ground_floor") if per_building_facades else None
+                    height_est = None  # Height comes from other sources for multi-building
+
+                    console.print(f"  [green]✓ Aggregated from {len(all_wwr_values)} buildings: WWR={wwr}, material={material}[/green]")
+
+                else:
+                    # Single building: standard analysis
+                    console.print("  [cyan]Fetching Google Street View facades (36+ multi-angle images)...[/cyan]")
+                    wwr, material, confidence, ground_floor, height_est = self._fetch_streetview_facades(
+                        fusion.footprint_geojson,
+                        use_multi_image=True,
+                        use_sam_crop=True,
+                        images_per_facade=3,  # 3 positions per facade × 4 directions = 12 base images
+                        use_historical=True,   # Add historical imagery for higher confidence
+                        historical_years=3,    # 3 years × 12 base = potentially 48 images
+                    )
                 # ═══════════════════════════════════════════════════════════════════════
                 # HEIGHT ESTIMATION - GSV AI estimates with cross-validation
                 # Priority: Official (Sweden GeoJSON/Gripen) > Estimated (Microsoft) > AI (GSV)
@@ -2027,6 +2715,7 @@ class FullPipelineAnalyzer:
                 construction_year=summary.get("construction_year", 0),
                 atemp_m2=summary.get("total_heated_area_sqm", 0),
                 declared_kwh_m2=summary.get("energy_performance_kwh_per_sqm", 0),
+                energy_class=summary.get("energy_class", ""),  # Declared energy class from declaration
                 heating_system=summary.get("heating_system", "unknown"),
                 ventilation_system="ftx",  # Modern buildings usually have FTX
                 owner_type="brf",
@@ -2067,6 +2756,9 @@ class FullPipelineAnalyzer:
                 construction_year=data.get("construction_year", 0),
                 atemp_m2=data.get("atemp_m2", 0),
                 declared_kwh_m2=data.get("declared_energy_kwh_m2", 0),
+                # CRITICAL FIX (2025-01-06): Extract energy_class from address_pipeline data!
+                # This was missing, causing packages to show calculated class (C) instead of declared (D).
+                energy_class=data.get("energy_class", ""),
                 heating_system=data.get("heating_system", "unknown"),
                 ventilation_system="ftx" if data.get("has_ftx") else "unknown",
                 owner_type="brf",
@@ -2118,6 +2810,7 @@ class FullPipelineAnalyzer:
                 construction_year=energy_dec.get("construction_year") or building.get("building_year", 0),
                 atemp_m2=energy_dec.get("heated_area_sqm") or building.get("atemp_sqm", 0),
                 declared_kwh_m2=energy_dec.get("energy_kwh_per_sqm", 0),
+                energy_class=energy_dec.get("energy_class", ""),  # Declared energy class
                 heating_system=prop.get("heating_type", "unknown"),
                 ventilation_system=energy_dec.get("ventilation_type", "unknown"),
                 owner_type=building.get("owner_type", "brf"),
@@ -2611,6 +3304,50 @@ class FullPipelineAnalyzer:
 
             # Use constraint engine for remaining rules
             from ..ecm.constraints import BuildingContext
+
+            # Window U-value estimation for constraint checking
+            # NOTE: We use conservative estimates here to ALLOW window replacement
+            # through constraint filtering. The IDF modifier has a sanity check
+            # that will SKIP the ECM if the actual calibrated U-value is already
+            # better than the target. This two-stage approach ensures:
+            # 1. Pre-filtering doesn't block potentially valid ECMs
+            # 2. Post-calibration check prevents making windows worse
+            #
+            # Only filter window replacement for buildings that DEFINITELY
+            # have good windows (very recent construction with known specs)
+            estimated_window_u = 2.0  # Default: assume windows could be improved
+            if fusion.construction_year:
+                # Only assume excellent windows for very recent buildings
+                if fusion.construction_year >= 2020:
+                    estimated_window_u = 0.9  # Recent passive house standard
+                elif fusion.construction_year >= 2015:
+                    estimated_window_u = 1.0  # Modern triple glazing
+                # For older buildings, assume there's room for improvement
+                # The IDF modifier will check actual values after calibration
+
+            # Use context value if explicitly set (from energy declaration or calibration)
+            if hasattr(context, 'current_window_u') and context.current_window_u > 0:
+                estimated_window_u = context.current_window_u
+
+            # Calculate available PV area from roof analysis or estimate
+            available_pv_area = 0.0
+            roof_type = "flat"  # Default
+            if fusion.roof_analysis:
+                # Use Google Solar API data if available
+                available_pv_area = fusion.roof_analysis.net_available_m2 or (fusion.pv_capacity_kwp * 5)  # ~5 m²/kWp
+                # Handle RoofType enum - convert to string for constraint checking
+                rt = fusion.roof_analysis.roof_type
+                if hasattr(rt, 'value'):
+                    roof_type = rt.value  # RoofType enum
+                elif rt:
+                    roof_type = str(rt)
+            elif fusion.pv_capacity_kwp > 0:
+                # Estimate from PV capacity (typical 200 W/m² = 5 m²/kWp)
+                available_pv_area = fusion.pv_capacity_kwp * 5
+            elif fusion.footprint_area_m2 > 0:
+                # Estimate 70% of footprint is usable for PV
+                available_pv_area = fusion.footprint_area_m2 * 0.7
+
             building_ctx = BuildingContext(
                 construction_year=fusion.construction_year,
                 building_type="multi_family",
@@ -2619,6 +3356,10 @@ class FullPipelineAnalyzer:
                 ventilation_type="ftx" if fusion.has_ftx else "exhaust",
                 heritage_listed=False,
                 current_heat_recovery=fusion.ftx_efficiency or 0.75,
+                current_window_u=estimated_window_u,
+                # PV/Solar constraints
+                available_pv_area_m2=available_pv_area,
+                roof_type=roof_type,
             )
             result = self.constraint_engine.evaluate_ecm(ecm, building_ctx)
             if result.is_valid:
@@ -2633,6 +3374,7 @@ class FullPipelineAnalyzer:
         baseline_kwh_m2: float,
         run_simulations: bool,
         baseline_idf: Path = None,
+        baseline_energy: Optional[EnergyBreakdown] = None,
     ) -> List[SnowballPackage]:
         """
         Generate snowball packages ordered by investment cost.
@@ -2641,11 +3383,70 @@ class FullPipelineAnalyzer:
 
         When run_simulations=True and baseline_idf is provided, packages are
         simulated as combined scenarios to capture ECM interaction effects.
-        """
 
-        # Sort ECMs by payback (shortest first)
+        Primary Energy Calculation (Swedish BBR):
+        - Calculates delivered → primary energy conversion for Swedish energy class
+        - Uses heating_type-specific factors (district_heating: 0.72, electricity: 1.8)
+        - Tracks before/after energy class (A-G) for each package
+        """
+        # ═══════════════════════════════════════════════════════════════════════
+        # BASELINE PRIMARY ENERGY (Swedish BBR)
+        # Calculate before any ECMs to establish energy class baseline
+        # ═══════════════════════════════════════════════════════════════════════
+        if baseline_energy is None:
+            # Default breakdown if not provided
+            baseline_energy = EnergyBreakdown(
+                heating_kwh_m2=baseline_kwh_m2,
+                dhw_kwh_m2=fusion.hot_water_kwh_m2 or 22.0,  # Swedish MFH default
+                property_el_kwh_m2=15.0,  # Swedish default
+            )
+
+        # Determine heating type for primary energy factor
+        heating_type = "district_heating"  # Default
+        if fusion.heating_system:
+            hs_lower = fusion.heating_system.lower()
+            if "heat_pump" in hs_lower or "värmepump" in hs_lower:
+                heating_type = "electricity"
+            elif "el" in hs_lower and "fjärr" not in hs_lower:
+                heating_type = "electricity"
+            elif "olja" in hs_lower or "oil" in hs_lower:
+                heating_type = "oil"
+            elif "gas" in hs_lower:
+                heating_type = "natural_gas"
+            elif "pellet" in hs_lower or "bio" in hs_lower:
+                heating_type = "biofuel"
+
+        # Calculate baseline primary energy
+        baseline_primary_kwh_m2 = calculate_primary_energy(
+            heating_kwh_m2=baseline_energy.heating_kwh_m2,
+            dhw_kwh_m2=baseline_energy.dhw_kwh_m2,
+            property_el_kwh_m2=baseline_energy.property_el_kwh_m2,
+            heating_type=heating_type,
+            region="stockholm",  # TODO: Get from fusion.city
+        )
+        # CRITICAL FIX (2025-01-06): Use DECLARED energy class from Gripen/energy declaration
+        # instead of recalculating. The declared class uses different methodology (delivered energy
+        # with older BBR thresholds) than our primary energy calculation (BBR 29).
+        # This ensures the package cards show the same baseline class as the building summary.
+        baseline_energy_class = fusion.energy_class if fusion.energy_class else get_energy_class(baseline_primary_kwh_m2, "multi_family")
+
+        # Track cumulative energy by end-use as we add packages
+        cumulative_energy = baseline_energy.copy()
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # CRITICAL FIX: Use TOTAL energy savings, not just heating-only!
+        # ECMs that save DHW or electricity (LED, solar PV, heat pump water heater)
+        # were being filtered out because heating-only savings_percent was 0 or negative.
+        #
+        # Filter criteria:
+        # 1. total_savings_percent > 0 (any energy savings across all end-uses), OR
+        # 2. annual_savings_sek > 0 (any cost savings - accounts for different prices)
+        # ═══════════════════════════════════════════════════════════════════════
         sorted_results = sorted(
-            [r for r in ecm_results if r.get("savings_percent", 0) > 0],
+            [r for r in ecm_results if (
+                r.get("total_savings_percent", r.get("savings_percent", 0)) > 0 or
+                r.get("annual_savings_sek", 0) > 0
+            )],
             key=lambda x: x.get("simple_payback_years", 999)
         )
 
@@ -2662,43 +3463,71 @@ class FullPipelineAnalyzer:
             {
                 "number": 1,
                 "name": "Steg 1: Snabba Vinster",
+                # Quick wins: operational measures + controls with < 10yr payback
+                # Note: Excludes "pump" to prevent heat pumps from matching here
                 "filter": lambda r, used: (
-                    r.get("simple_payback_years", 999) < 5 and
+                    r.get("simple_payback_years", 999) < 10 and
+                    "heat_pump" not in r["ecm_id"] and  # Heat pumps go to Steg 3
                     any(k in r["ecm_id"] for k in [
+                        # Operational/controls
                         "effektvakt", "heating_curve", "radiator", "night_setback",
-                        "bms", "duc", "thermostat", "pump", "dcv", "demand_controlled",
-                        "ventilation_schedule", "hot_water", "dhw", "low_flow"
+                        "bms", "duc", "thermostat", "pump_optimization", "dcv", "demand_controlled",
+                        "ventilation_schedule", "hot_water", "dhw", "low_flow",
+                        # Smart controls
+                        "smart", "occupancy", "daylight", "predictive", "fault_detection",
+                        "monitoring", "metering", "circulation", "balancing",
+                        # Additional operational
+                        "summer_bypass", "recommissioning", "district_heating", "heat_recovery_dhw"
                     ])
                 ),
-                "max_ecms": 5,  # More ECMs since these are low-cost
+                "max_ecms": 6,  # More ECMs since these are low-cost
                 "year": 1,
                 "interaction_factor": 0.90,
             },
             {
                 "number": 2,
                 "name": "Steg 2: Byggnadsförbättringar",
+                # Building improvements: envelope + systems with < 30yr payback
+                # NOTE: Swedish BRFs plan 30-50 year maintenance cycles, so 30yr is realistic
+                # These measures are often done for maintenance reasons, not just ROI
                 "filter": lambda r, used: (
-                    r.get("simple_payback_years", 999) < 15 and
+                    r.get("simple_payback_years", 999) < 30 and
                     any(k in r["ecm_id"] for k in [
+                        # Envelope
                         "roof", "air_sealing", "attic", "pipe_insulation",
-                        "ftx", "led", "window", "entrance"
+                        "thermal_bridge", "entrance_door",
+                        # FTX system upgrades (not operational tuning)
+                        "ftx_upgrade", "ftx_installation", "ftx_overhaul",
+                        # Lighting retrofits
+                        "led_lighting", "led_common", "led_outdoor",
+                        # Windows
+                        "window_replacement"
                     ])
                 ),
-                "max_ecms": 4,
+                "max_ecms": 5,
                 "year": 3,
                 "interaction_factor": 0.85,
             },
             {
                 "number": 3,
                 "name": "Steg 3: Stora Investeringar",
+                # Major investments: envelope + renewables with < 25yr payback
+                # Increased max_ecms from 4 to 8 to include solar_pv which often has
+                # good payback (6-7yr) with heat pump synergy
                 "filter": lambda r, used: (
                     r.get("simple_payback_years", 999) < 25 and
                     any(k in r["ecm_id"] for k in [
-                        "wall", "facade", "solar", "pv", "heat_pump", "battery",
-                        "ground_source", "basement"
+                        # Major envelope
+                        "wall", "facade", "basement", "external_insulation",
+                        "internal_insulation",
+                        # Renewables & storage
+                        "solar", "pv", "battery",
+                        # Heat pumps
+                        "heat_pump", "ground_source", "air_source", "exhaust_air",
+                        "vrf", "automation"
                     ])
                 ),
-                "max_ecms": 3,
+                "max_ecms": 8,  # Increased from 4 to include solar_pv
                 "year": 5,
                 "interaction_factor": 0.80,
             },
@@ -2722,7 +3551,26 @@ class FullPipelineAnalyzer:
                 if r["ecm_id"] not in used_ecm_ids and pkg_def["filter"](r, used_ecm_ids)
             ]
 
+            # Debug logging for package filtering
             if not matching:
+                # Log why this package has no matching ECMs
+                steg_keywords = {
+                    1: ["effektvakt", "heating_curve", "radiator", "night_setback", "bms", "duc", "thermostat", "pump", "dcv", "demand_controlled", "ventilation_schedule", "hot_water", "dhw", "low_flow", "smart", "occupancy", "daylight", "predictive", "fault_detection", "monitoring", "metering", "circulation", "balancing", "summer_bypass", "recommissioning", "district_heating", "heat_recovery_dhw"],
+                    2: ["roof", "air_sealing", "attic", "pipe_insulation", "thermal_bridge", "entrance_door", "ftx_upgrade", "ftx_installation", "ftx_overhaul", "led_lighting", "led_common", "led_outdoor", "window_replacement"],
+                    3: ["wall", "facade", "basement", "external_insulation", "internal_insulation", "solar", "pv", "battery", "heat_pump", "ground_source", "air_source", "exhaust_air", "vrf", "automation"],
+                }.get(pkg_def["number"], [])
+
+                potential_matches = [r for r in sorted_results if any(k in r["ecm_id"] for k in steg_keywords)]
+                excluded_by_used = [r for r in potential_matches if r["ecm_id"] in used_ecm_ids]
+                excluded_by_payback = [r for r in potential_matches if r["ecm_id"] not in used_ecm_ids and r.get("simple_payback_years", 999) >= {1: 10, 2: 30, 3: 25}.get(pkg_def["number"], 999)]
+
+                logger.info(f"Package Steg {pkg_def['number']} ({pkg_def['name']}) has NO matching ECMs:")
+                logger.info(f"  - Potential ECMs matching keywords: {[r['ecm_id'] for r in potential_matches]}")
+                logger.info(f"  - Already used in earlier packages: {[r['ecm_id'] for r in excluded_by_used]}")
+                payback_info = [(r['ecm_id'], round(r.get('simple_payback_years', 999), 1)) for r in excluded_by_payback]
+                logger.info(f"  - Excluded by payback threshold: {payback_info}")
+
+                console.print(f"  [yellow]Steg {pkg_def['number']} skipped - no qualifying ECMs (check logs)[/yellow]")
                 continue
 
             # ═══════════════════════════════════════════════════════════════════════
@@ -2806,35 +3654,174 @@ class FullPipelineAnalyzer:
 
             # ═══════════════════════════════════════════════════════════════════════
             # Calculate INCREMENTAL and CUMULATIVE savings properly
+            # NOTE: These are HEATING-ONLY from E+ simulation. We'll recalculate
+            # total savings below after summing all end-uses.
             # ═══════════════════════════════════════════════════════════════════════
 
-            # Incremental savings = what THIS package adds on top of previous
+            # Incremental savings (heating only from simulation)
             incremental_savings_kwh = previous_kwh_m2 - pkg_kwh_m2
-            incremental_savings_percent = (incremental_savings_kwh / baseline_kwh_m2) * 100
+            incremental_savings_percent_heating = (incremental_savings_kwh / baseline_kwh_m2) * 100 if baseline_kwh_m2 > 0 else 0
 
-            # Cumulative savings = total from baseline (what the report should show)
+            # Cumulative savings (heating only from simulation)
             cumulative_savings_kwh = baseline_kwh_m2 - pkg_kwh_m2
-            cumulative_savings_percent = (cumulative_savings_kwh / baseline_kwh_m2) * 100
+            cumulative_savings_percent_heating = (cumulative_savings_kwh / baseline_kwh_m2) * 100 if baseline_kwh_m2 > 0 else 0
 
-            # Annual savings in SEK (based on INCREMENTAL savings for this package's investment)
-            incremental_energy_savings_kwh_year = incremental_savings_kwh * fusion.atemp_m2
-            annual_savings_sek = incremental_energy_savings_kwh_year * 0.90  # District heating ~0.90 SEK/kWh
+            # ═══════════════════════════════════════════════════════════════════════
+            # COLLECT ALL END-USE SAVINGS (not just heating!)
+            # This fixes the bug where DHW ECMs showed 0 SEK savings
+            # ═══════════════════════════════════════════════════════════════════════
+
+            # Sum up savings by end-use from all ECMs in this package
+            pkg_heating_savings = 0.0
+            pkg_dhw_savings = 0.0
+            pkg_prop_el_savings = 0.0
+
+            for ecm_result in pkg_results:
+                savings_by_use = ecm_result.get("savings_by_end_use", {})
+                if savings_by_use:
+                    pkg_heating_savings += savings_by_use.get("heating", 0)
+                    pkg_dhw_savings += savings_by_use.get("dhw", 0)
+                    pkg_prop_el_savings += savings_by_use.get("property_el", 0)
+                else:
+                    # Fallback: assume all savings are heating if no breakdown
+                    pkg_heating_savings += ecm_result.get("savings_kwh_m2", 0)
+
+            # Apply synergy factor (ECM interactions reduce combined effectiveness)
+            pkg_heating_savings *= synergy_factor
+            pkg_dhw_savings *= synergy_factor
+            pkg_prop_el_savings *= synergy_factor
+
+            # ═══════════════════════════════════════════════════════════════════════
+            # CALCULATE ANNUAL SAVINGS IN SEK (ALL END-USES!)
+            # - Heating: 0.90 SEK/kWh (district heating)
+            # - DHW: 0.90 SEK/kWh (district heating)
+            # - Property electricity: 1.50 SEK/kWh
+            # ═══════════════════════════════════════════════════════════════════════
+            heating_savings_sek = pkg_heating_savings * fusion.atemp_m2 * 0.90
+            dhw_savings_sek = pkg_dhw_savings * fusion.atemp_m2 * 0.90
+            prop_el_savings_sek = pkg_prop_el_savings * fusion.atemp_m2 * 1.50
+            annual_savings_sek = heating_savings_sek + dhw_savings_sek + prop_el_savings_sek
+
+            # Add effektavgift savings if available (sum from individual ECMs)
+            for ecm_result in pkg_results:
+                annual_savings_sek += ecm_result.get("effekt_savings_sek", 0)
 
             cumulative_investment += pkg_investment
             used_ecm_ids.update(pkg_ecms)
+
+            # Track total energy BEFORE this package (for progression display)
+            before_total_kwh_m2 = cumulative_energy.total_kwh_m2
+
+            # Update cumulative energy (from previous package's state)
+            cumulative_energy.heating_kwh_m2 = max(0, cumulative_energy.heating_kwh_m2 - pkg_heating_savings)
+            cumulative_energy.dhw_kwh_m2 = max(0, cumulative_energy.dhw_kwh_m2 - pkg_dhw_savings)
+            cumulative_energy.property_el_kwh_m2 = max(0, cumulative_energy.property_el_kwh_m2 - pkg_prop_el_savings)
+
+            # Track total energy AFTER this package
+            after_total_kwh_m2 = cumulative_energy.total_kwh_m2
+
+            # Calculate after-package primary energy
+            after_primary_kwh_m2 = calculate_primary_energy(
+                heating_kwh_m2=cumulative_energy.heating_kwh_m2,
+                dhw_kwh_m2=cumulative_energy.dhw_kwh_m2,
+                property_el_kwh_m2=cumulative_energy.property_el_kwh_m2,
+                heating_type=heating_type,
+                region="stockholm",
+            )
+            after_energy_class = get_energy_class(after_primary_kwh_m2, "multi_family")
+
+            # Calculate energy classes improved (A=0, B=1, C=2, D=3, E=4, F=5, G=6)
+            class_order = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "F": 5, "G": 6}
+            before_idx = class_order.get(baseline_energy_class, 6)
+            after_idx = class_order.get(after_energy_class, 6)
+            classes_improved = before_idx - after_idx  # Positive = improvement
+
+            # Calculate primary energy savings percentage
+            primary_savings_pct = 0.0
+            if baseline_primary_kwh_m2 > 0:
+                primary_savings_pct = ((baseline_primary_kwh_m2 - after_primary_kwh_m2) / baseline_primary_kwh_m2) * 100
+
+            # ═══════════════════════════════════════════════════════════════════════
+            # Calculate TOTAL savings percent (all end-uses, not just heating!)
+            # This ensures package % is consistent with individual ECM %
+            # ═══════════════════════════════════════════════════════════════════════
+            total_incremental_savings_kwh = pkg_heating_savings + pkg_dhw_savings + pkg_prop_el_savings
+            baseline_total_kwh_m2 = baseline_energy.total_kwh_m2 if baseline_energy.total_kwh_m2 > 0 else baseline_kwh_m2
+            incremental_savings_percent = (total_incremental_savings_kwh / baseline_total_kwh_m2) * 100 if baseline_total_kwh_m2 > 0 else 0
+
+            # Cumulative = all packages so far relative to baseline total
+            cumulative_total_savings_kwh = baseline_energy.total_kwh_m2 - cumulative_energy.total_kwh_m2
+            cumulative_savings_percent = (cumulative_total_savings_kwh / baseline_total_kwh_m2) * 100 if baseline_total_kwh_m2 > 0 else 0
+
+            # ═══════════════════════════════════════════════════════════════════════
+            # CALCULATE FUND-BASED RECOMMENDED YEAR
+            # Based on BRF fund parameters, calculate when cumulative investment
+            # can be afforded. Uses actual data if available, otherwise conservative estimates.
+            # ═══════════════════════════════════════════════════════════════════════
+            current_year = date.today().year
+
+            # Try to get actual fund data from fusion (if set from building_data)
+            actual_fund = getattr(fusion, 'current_fund_sek', 0) if fusion else 0
+            actual_contribution = getattr(fusion, 'annual_fund_contribution_sek', 0) if fusion else 0
+
+            # Use actual values if available, otherwise conservative estimates
+            # Conservative: 50 SEK/m² fund, 20 SEK/m² annual contribution
+            if actual_fund > 0:
+                fund_balance = actual_fund
+            else:
+                fund_balance = fusion.atemp_m2 * 50 if fusion else 500_000  # Conservative estimate
+
+            if actual_contribution > 0:
+                annual_contribution = actual_contribution
+            else:
+                annual_contribution = fusion.atemp_m2 * 20 if fusion else 200_000  # Conservative estimate
+
+            # Previous packages' savings contribute to fund (snowball effect)
+            cumulative_savings_reinvested = 0
+            for prev_pkg in packages:
+                cumulative_savings_reinvested += prev_pkg.annual_savings_sek
+
+            # Calculate years needed to afford cumulative investment
+            # Fund grows by: annual_contribution + reinvested_savings
+            annual_fund_growth = annual_contribution + cumulative_savings_reinvested
+            net_investment_needed = cumulative_investment - fund_balance
+
+            if net_investment_needed <= 0:
+                # Fund can already afford this package
+                years_to_afford = 0
+            elif annual_fund_growth > 0:
+                years_to_afford = int(net_investment_needed / annual_fund_growth) + 1
+            else:
+                years_to_afford = 99  # Can't afford without fund growth
+
+            fund_recommended_year = current_year + years_to_afford
 
             packages.append(SnowballPackage(
                 package_number=pkg_def["number"],
                 package_name=pkg_def["name"],
                 ecm_ids=pkg_ecms,
                 combined_kwh_m2=pkg_kwh_m2,
-                savings_percent=incremental_savings_percent,  # What THIS package adds
+                savings_percent=incremental_savings_percent,  # Total savings (all end-uses)
                 total_investment_sek=pkg_investment,
                 annual_savings_sek=annual_savings_sek,
                 simple_payback_years=pkg_investment / annual_savings_sek if annual_savings_sek > 0 else 99,
                 cumulative_investment_sek=cumulative_investment,
                 cumulative_savings_percent=cumulative_savings_percent,  # Total from baseline
-                recommended_year=pkg_def["year"],
+                recommended_year=pkg_def["year"],  # Relative year (1, 3, 5)
+                # Primary energy & energy class (Swedish BBR)
+                before_primary_kwh_m2=baseline_primary_kwh_m2,
+                after_primary_kwh_m2=after_primary_kwh_m2,
+                primary_savings_percent=primary_savings_pct,
+                before_energy_class=baseline_energy_class,
+                after_energy_class=after_energy_class,
+                classes_improved=classes_improved,
+                # Energy progression (total energy including all end-uses)
+                before_total_kwh_m2=before_total_kwh_m2,
+                after_total_kwh_m2=after_total_kwh_m2,
+                # Fund-based timing
+                fund_recommended_year=fund_recommended_year,
+                fund_available_sek=fund_balance + years_to_afford * annual_fund_growth,
+                years_to_afford=years_to_afford,
             ))
 
             # Update previous for next iteration
@@ -2842,26 +3829,133 @@ class FullPipelineAnalyzer:
             current_kwh_m2 = pkg_kwh_m2
 
         # ═══════════════════════════════════════════════════════════════════════
-        # PAYBACK FILTER: Remove packages with unrealistic payback (> 30 years)
-        # These are not economically viable recommendations
+        # VIABILITY ASSESSMENT: Flag packages with long payback but keep them
+        # Show all options with clear warnings for non-viable investments
         # ═══════════════════════════════════════════════════════════════════════
-        valid_packages = []
+        EFFICIENT_BASELINE_THRESHOLD = 70  # kWh/m² - below this is "efficient"
+        is_efficient_building = baseline_kwh_m2 < EFFICIENT_BASELINE_THRESHOLD
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # GREEN LOAN BENEFIT (Grönt Lån): 0.5% lower interest for Energy Class A
+        # Swedish banks offer reduced rates ONLY for buildings reaching A class
+        # This significantly improves ROI for deep retrofits that achieve Class A
+        # NOTE: Energy Class B does NOT qualify for green loans
+        # ═══════════════════════════════════════════════════════════════════════
+        GREEN_LOAN_INTEREST_REDUCTION = 0.005  # 0.5% lower annual rate
+        TYPICAL_LOAN_TERM_YEARS = 20  # Standard BRF loan term
+        TYPICAL_LOAN_RATE = 0.035  # 3.5% base rate
+
         for pkg in packages:
-            if pkg.simple_payback_years <= MAX_PAYBACK_YEARS:
-                valid_packages.append(pkg)
-            else:
-                console.print(
-                    f"  [yellow]Excluding {pkg.package_name}: "
-                    f"payback {pkg.simple_payback_years:.0f}yr > {MAX_PAYBACK_YEARS}yr limit[/yellow]"
+            # Check if package reaches Energy Class A (ONLY A qualifies for green loan)
+            if pkg.after_energy_class == "A":
+                pkg.qualifies_for_green_loan = True
+
+                # Calculate interest savings over loan period
+                # Simplified: interest_savings = loan_amount × rate_reduction × avg_balance_factor × years
+                # Avg balance factor ≈ 0.5 for amortizing loan
+                loan_amount = pkg.cumulative_investment_sek
+                avg_balance_factor = 0.55  # Slightly higher due to front-loaded interest
+                pkg.green_loan_interest_savings_sek = (
+                    loan_amount * GREEN_LOAN_INTEREST_REDUCTION * avg_balance_factor * TYPICAL_LOAN_TERM_YEARS
                 )
 
-        if len(valid_packages) < len(packages):
+                # Calculate adjusted payback with green loan benefit
+                # Annual benefit = green loan savings / loan term + energy savings
+                annual_green_benefit = pkg.green_loan_interest_savings_sek / TYPICAL_LOAN_TERM_YEARS
+                total_annual_benefit = pkg.annual_savings_sek + annual_green_benefit
+                if total_annual_benefit > 0:
+                    pkg.adjusted_payback_with_green_loan = pkg.total_investment_sek / total_annual_benefit
+                else:
+                    pkg.adjusted_payback_with_green_loan = pkg.simple_payback_years
+
+            if pkg.simple_payback_years > MAX_PAYBACK_YEARS:
+                # Check if green loan makes it viable
+                if pkg.qualifies_for_green_loan and pkg.adjusted_payback_with_green_loan <= MAX_PAYBACK_YEARS:
+                    pkg.is_viable = True
+                    pkg.viability_warning = ""
+                    console.print(
+                        f"  [green]✓ {pkg.package_name}: payback {pkg.simple_payback_years:.0f}yr "
+                        f"→ {pkg.adjusted_payback_with_green_loan:.0f}yr with grönt lån (Energy Class {pkg.after_energy_class})[/green]"
+                    )
+                    console.print(
+                        f"    [cyan]💰 Grönt lån benefit: {pkg.green_loan_interest_savings_sek:,.0f} SEK "
+                        f"interest savings over {TYPICAL_LOAN_TERM_YEARS} years (0.5% reduced rate)[/cyan]"
+                    )
+                else:
+                    pkg.is_viable = False
+                    if pkg.qualifies_for_green_loan:
+                        # Even with green loan, payback is long
+                        pkg.viability_warning = (
+                            f"Återbetalningstid {pkg.adjusted_payback_with_green_loan:.0f} år med grönt lån "
+                            f"(ränterabatt {pkg.green_loan_interest_savings_sek:,.0f} SEK)"
+                        )
+                        console.print(
+                            f"  [yellow]⚠ {pkg.package_name}: payback {pkg.simple_payback_years:.0f}yr "
+                            f"→ {pkg.adjusted_payback_with_green_loan:.0f}yr with grönt lån "
+                            f"(still > {MAX_PAYBACK_YEARS}yr)[/yellow]"
+                        )
+                        console.print(
+                            f"    [cyan]💰 Grönt lån: {pkg.green_loan_interest_savings_sek:,.0f} SEK savings "
+                            f"+ Energy Class {pkg.after_energy_class} (future-proofs the building)[/cyan]"
+                        )
+                    else:
+                        pkg.viability_warning = (
+                            f"Återbetalningstid {pkg.simple_payback_years:.0f} år överstiger "
+                            f"rekommenderad gräns ({MAX_PAYBACK_YEARS} år)"
+                        )
+                        console.print(
+                            f"  [yellow]⚠ {pkg.package_name}: payback {pkg.simple_payback_years:.0f}yr "
+                            f"> {MAX_PAYBACK_YEARS}yr (NOT RECOMMENDED)[/yellow]"
+                        )
+
+                # Add recommendation for efficient buildings
+                if is_efficient_building and pkg.package_number == 3:
+                    if pkg.qualifies_for_green_loan:
+                        pkg.recommendation = (
+                            f"Når energiklass {pkg.after_energy_class} → kvalificerar för grönt lån. "
+                            f"Trots lång återbetalningstid ökar fastighetsvärdet och framtidssäkras."
+                        )
+                    else:
+                        pkg.recommendation = (
+                            "Byggnaden är redan energieffektiv. Överväg istället: "
+                            "solceller (8-12 års återbetalningstid), "
+                            "effektvaktsoptimering, eller batterilager för egenanvändning."
+                        )
+            elif pkg.simple_payback_years > 20:
+                # Long but acceptable payback - add note about green loan if applicable
+                if pkg.qualifies_for_green_loan:
+                    pkg.viability_warning = (
+                        f"Lång återbetalningstid ({pkg.simple_payback_years:.0f} år) men "
+                        f"kvalificerar för grönt lån → {pkg.adjusted_payback_with_green_loan:.0f} år"
+                    )
+                else:
+                    pkg.viability_warning = (
+                        f"Lång återbetalningstid ({pkg.simple_payback_years:.0f} år) - "
+                        f"överväg vid planerad renovering"
+                    )
+            elif pkg.qualifies_for_green_loan:
+                # Good payback AND qualifies for green loan - highlight this!
+                console.print(
+                    f"  [green]✓ {pkg.package_name}: Energy Class {pkg.after_energy_class} "
+                    f"→ grönt lån eligible (+{pkg.green_loan_interest_savings_sek:,.0f} SEK benefit)[/green]"
+                )
+
+        # Add general recommendation for efficient buildings
+        if is_efficient_building and packages:
             console.print(
-                f"  [cyan]Filtered {len(packages) - len(valid_packages)} packages "
-                f"with payback > {MAX_PAYBACK_YEARS} years[/cyan]"
+                f"  [cyan]ℹ Byggnaden är redan effektiv ({baseline_kwh_m2:.0f} kWh/m²). "
+                f"Fokusera på driftoptimering och solenergi.[/cyan]"
             )
 
-        return valid_packages
+        # Count non-viable packages
+        non_viable = [p for p in packages if not p.is_viable]
+        if non_viable:
+            console.print(
+                f"  [cyan]Visar {len(packages)} paket "
+                f"({len(non_viable)} med varning för lång återbetalningstid)[/cyan]"
+            )
+
+        return packages
 
     def _run_baseline(
         self,
@@ -3444,11 +4538,26 @@ class FullPipelineAnalyzer:
             ecm_dir.mkdir(parents=True, exist_ok=True)
 
             try:
+                # Build ECM-specific params
+                ecm_params = {}
+                if ecm.id == "solar_pv":
+                    # Pass remaining PV capacity (accounts for existing installations)
+                    pv_capacity = fusion.remaining_pv_capacity_kwp or fusion.pv_capacity_kwp
+                    ecm_params = {
+                        "optimal_capacity_kwp": pv_capacity,
+                        "roof_area_m2": fusion.footprint_area_m2 or 320,
+                        "data_source": "fusion",
+                    }
+                    if fusion.roof_analysis:
+                        ecm_params["roof_analysis"] = fusion.roof_analysis
+                        ecm_params["tilt_deg"] = getattr(fusion.roof_analysis, 'primary_pitch_deg', 40)
+                        ecm_params["azimuth_deg"] = getattr(fusion.roof_analysis, 'primary_azimuth_deg', 180)
+
                 # Apply ECM
                 modified_idf = self.idf_modifier.apply_single(
                     baseline_idf=baseline_idf,
                     ecm_id=ecm.id,
-                    params={},
+                    params=ecm_params,
                     output_dir=ecm_dir,
                 )
 
@@ -3466,6 +4575,33 @@ class FullPipelineAnalyzer:
                         ecm_heating_kwh_m2 = parsed.heating_kwh_m2 * heating_scaling_factor
 
                         savings_pct = (baseline_kwh_m2 - ecm_heating_kwh_m2) / baseline_kwh_m2 * 100
+
+                        # ═══════════════════════════════════════════════════════════════
+                        # SAFETY CHECK: Detect unrealistic negative savings
+                        # If savings < -10%, the IDF modification likely failed or created issues.
+                        # Fall back to expected savings from ECM_END_USE_EFFECTS.
+                        # ═══════════════════════════════════════════════════════════════
+                        from .energy_breakdown import ECM_END_USE_EFFECTS
+                        ecm_effects = ECM_END_USE_EFFECTS.get(ecm.id, {})
+
+                        if savings_pct < -10:
+                            # Unrealistic negative savings - IDF modification likely failed
+                            logger.warning(f"ECM {ecm.id}: Unrealistic savings {savings_pct:.1f}%, using fallback")
+                            if ecm_effects.get("heating"):
+                                # Use expected savings from ECM_END_USE_EFFECTS
+                                expected_pct = ecm_effects["heating"] * 100
+                                ecm_heating_kwh_m2 = baseline_kwh_m2 * (1 - expected_pct / 100)
+                                savings_pct = expected_pct
+                            else:
+                                # No heating effect expected - use 0
+                                ecm_heating_kwh_m2 = baseline_kwh_m2
+                                savings_pct = 0
+
+                        # ECMs with no thermal effect (empty effects dict) should return 0 savings
+                        if ecm_effects == {}:
+                            logger.debug(f"ECM {ecm.id}: No thermal effect defined, using 0% savings")
+                            ecm_heating_kwh_m2 = baseline_kwh_m2
+                            savings_pct = 0
 
                         # Calculate costs using V2 cost database
                         quantity = self._get_quantity(ecm.id, fusion)
@@ -3511,10 +4647,51 @@ class FullPipelineAnalyzer:
                         # Calculate multi-end-use savings (heating from sim, others from %)
                         # Use SCALED heating result for consistency with baseline_energy
                         # ═══════════════════════════════════════════════════════════════
+                        # For solar_pv, extract actual PV generation from simulation
+                        pv_generation_kwh_m2 = None
+                        if ecm.id == "solar_pv" and hasattr(parsed, 'pv_generation_kwh_m2'):
+                            pv_generation_kwh_m2 = parsed.pv_generation_kwh_m2
+                            if pv_generation_kwh_m2 > 0:
+                                console.print(f"  [green]✓ Solar PV: Actual generation = {pv_generation_kwh_m2:.1f} kWh/m²[/green]")
+
+                                # CRITICAL FIX (2025-01-06): Recalculate investment based on ACTUAL simulated capacity
+                                # The E+ simulation models the actual PV system, not the theoretical roof capacity
+                                # Original quantity was from Google Solar API (roof potential), but E+ generates less
+                                actual_total_kwh = pv_generation_kwh_m2 * fusion.atemp_m2
+                                PV_YIELD_KWH_PER_KWP = 950  # Stockholm typical yield
+                                actual_capacity_kwp = actual_total_kwh / PV_YIELD_KWH_PER_KWP
+                                old_investment = investment  # Store old for comparison
+
+                                # Recalculate investment using actual capacity
+                                try:
+                                    cost = self.cost_calculator.calculate_ecm_cost(
+                                        ecm_id=ecm.id,
+                                        quantity=actual_capacity_kwp,
+                                        floor_area_m2=fusion.atemp_m2,
+                                    )
+                                    investment = cost.total_after_deductions
+
+                                    # Show BRF-level solar context if applicable
+                                    MIN_SIGNIFICANT_SOLAR_KWP = 5.0
+                                    if fusion.brf_has_solar and fusion.brf_existing_solar_kwp >= MIN_SIGNIFICANT_SOLAR_KWP:
+                                        # Significant existing solar - show as additional
+                                        console.print(f"  [green]✓ Solar PV: {actual_capacity_kwp:.1f} kWp ADDITIONAL (BRF already has {fusion.brf_existing_solar_kwp:.1f} kWp)[/green]")
+                                        console.print(f"  [cyan]    Investment = {investment:,.0f} SEK (was {old_investment:,.0f})[/cyan]")
+                                    elif fusion.brf_has_solar and fusion.brf_existing_solar_kwp > 0:
+                                        # Minimal existing solar - recommend full capacity
+                                        console.print(f"  [green]✓ Solar PV: {actual_capacity_kwp:.1f} kWp (BRF has minimal solar: {fusion.brf_existing_solar_kwp:.1f} kWp)[/green]")
+                                        console.print(f"  [cyan]    Investment = {investment:,.0f} SEK[/cyan]")
+                                    else:
+                                        console.print(f"  [green]✓ Solar PV: {actual_capacity_kwp:.1f} kWp, Investment = {investment:,.0f} SEK (was {old_investment:,.0f})[/green]")
+                                except Exception as e:
+                                    console.print(f"  [yellow]⚠ Solar PV cost recalculation failed: {e}[/yellow]")
+
                         result_energy, savings_by_use = calculate_ecm_savings(
                             ecm_id=ecm.id,
                             baseline=baseline_energy,
                             simulated_heating_result=ecm_heating_kwh_m2,  # SCALED value
+                            heating_system=fusion.heating_system,  # For PV + heat pump synergy
+                            pv_generation_kwh_m2=pv_generation_kwh_m2,  # Actual PV generation if available
                         )
 
                         # Total savings across all end-uses
@@ -3522,19 +4699,29 @@ class FullPipelineAnalyzer:
                         total_savings_pct = (total_savings_kwh_m2 / baseline_energy.total_kwh_m2 * 100) if baseline_energy.total_kwh_m2 > 0 else 0
 
                         # Additional savings from non-heating end-uses (for SEK calculation)
+                        # IMPORTANT: For solar_pv with heat pump, heating savings come from synergy (not E+ sim)
+                        heating_savings_kwh_from_synergy = savings_by_use.get("heating", 0) * fusion.atemp_m2
                         dhw_savings_kwh = savings_by_use.get("dhw", 0) * fusion.atemp_m2
                         prop_el_savings_kwh = savings_by_use.get("property_el", 0) * fusion.atemp_m2
+
+                        # Use synergy-based heating savings if they're higher (for solar_pv + heat pump)
+                        if heating_savings_kwh_from_synergy > annual_savings_kwh:
+                            heating_savings_sek = heating_savings_kwh_from_synergy * 0.90  # District heating price
+                        else:
+                            heating_savings_sek = energy_savings_sek
+
                         dhw_savings_sek = dhw_savings_kwh * 0.90  # District heating price
                         prop_el_savings_sek = prop_el_savings_kwh * 1.50  # Electricity ~1.50 SEK/kWh
 
                         # Update total savings to include all end-uses
-                        total_energy_savings_sek = energy_savings_sek + dhw_savings_sek + prop_el_savings_sek
+                        total_energy_savings_sek = heating_savings_sek + dhw_savings_sek + prop_el_savings_sek
                         total_annual_savings_sek = total_energy_savings_sek + effekt_savings_sek
                         payback = investment / total_annual_savings_sek if total_annual_savings_sek > 0 else 99
 
                         ecm_result = {
                             "ecm_id": ecm.id,
                             "ecm_name": ecm.name,
+                            "name_sv": getattr(ecm, 'name_sv', ecm.name),  # Swedish name for display
                             # Heating-only (SCALED to declared basis)
                             "heating_kwh_m2": ecm_heating_kwh_m2,  # SCALED value
                             "savings_percent": savings_pct,  # Heating-only savings %
@@ -3549,7 +4736,7 @@ class FullPipelineAnalyzer:
                             "investment_sek": investment,
                             "annual_savings_sek": total_annual_savings_sek,
                             "energy_savings_sek": total_energy_savings_sek,
-                            "heating_savings_sek": energy_savings_sek,
+                            "heating_savings_sek": heating_savings_sek,  # Use synergy-based if higher
                             "dhw_savings_sek": dhw_savings_sek,
                             "prop_el_savings_sek": prop_el_savings_sek,
                             "effekt_savings_sek": effekt_savings_sek,
@@ -3611,6 +4798,7 @@ class FullPipelineAnalyzer:
             results.append({
                 "ecm_id": ecm.id,
                 "ecm_name": ecm.name,
+                "name_sv": getattr(ecm, 'name_sv', ecm.name),  # Swedish name for display
                 "heating_kwh_m2": baseline_kwh_m2 * (1 - typical_savings / 100),
                 "savings_percent": typical_savings,
                 "investment_sek": investment,
@@ -3694,11 +4882,26 @@ class FullPipelineAnalyzer:
             ecm_dirs.append(ecm_dir)
 
             try:
+                # Build ECM-specific params
+                ecm_params = {}
+                if ecm.id == "solar_pv":
+                    # Pass remaining PV capacity (accounts for existing installations)
+                    pv_capacity = fusion.remaining_pv_capacity_kwp or fusion.pv_capacity_kwp
+                    ecm_params = {
+                        "optimal_capacity_kwp": pv_capacity,
+                        "roof_area_m2": fusion.footprint_area_m2 or 320,
+                        "data_source": "fusion",
+                    }
+                    if fusion.roof_analysis:
+                        ecm_params["roof_analysis"] = fusion.roof_analysis
+                        ecm_params["tilt_deg"] = getattr(fusion.roof_analysis, 'primary_pitch_deg', 40)
+                        ecm_params["azimuth_deg"] = getattr(fusion.roof_analysis, 'primary_azimuth_deg', 180)
+
                 # Apply ECM modifications to create modified IDF
                 modified_idf = self.idf_modifier.apply_single(
                     baseline_idf=baseline_idf,
                     ecm_id=ecm.id,
-                    params={},
+                    params=ecm_params,
                     output_dir=ecm_dir,
                 )
                 idf_paths.append(modified_idf)
@@ -3772,6 +4975,33 @@ class FullPipelineAnalyzer:
                     ecm_heating_kwh_m2 = parsed.heating_kwh_m2 * heating_scaling_factor
                     savings_pct = (baseline_kwh_m2 - ecm_heating_kwh_m2) / baseline_kwh_m2 * 100
 
+                    # ═══════════════════════════════════════════════════════════════
+                    # SAFETY CHECK: Detect unrealistic negative savings
+                    # If savings < -10%, the IDF modification likely failed or created issues.
+                    # Fall back to expected savings from ECM_END_USE_EFFECTS.
+                    # ═══════════════════════════════════════════════════════════════
+                    from .energy_breakdown import ECM_END_USE_EFFECTS
+                    ecm_effects = ECM_END_USE_EFFECTS.get(ecm.id, {})
+
+                    if savings_pct < -10:
+                        # Unrealistic negative savings - IDF modification likely failed
+                        logger.warning(f"ECM {ecm.id}: Unrealistic savings {savings_pct:.1f}%, using fallback")
+                        if ecm_effects.get("heating"):
+                            # Use expected savings from ECM_END_USE_EFFECTS
+                            expected_pct = ecm_effects["heating"] * 100
+                            ecm_heating_kwh_m2 = baseline_kwh_m2 * (1 - expected_pct / 100)
+                            savings_pct = expected_pct
+                        else:
+                            # No heating effect expected - use 0
+                            ecm_heating_kwh_m2 = baseline_kwh_m2
+                            savings_pct = 0
+
+                    # ECMs with no thermal effect (empty effects dict) should return 0 savings
+                    if ecm_effects == {}:
+                        logger.debug(f"ECM {ecm.id}: No thermal effect defined, using 0% savings")
+                        ecm_heating_kwh_m2 = baseline_kwh_m2
+                        savings_pct = 0
+
                     # Calculate costs using V2 cost database
                     quantity = self._get_quantity(ecm.id, fusion)
                     try:
@@ -3800,10 +5030,49 @@ class FullPipelineAnalyzer:
                         )
 
                     # Calculate multi-end-use savings
+                    # For solar_pv, extract actual PV generation from simulation
+                    pv_generation_kwh_m2 = None
+                    if ecm.id == "solar_pv" and hasattr(parsed, 'pv_generation_kwh_m2'):
+                        pv_generation_kwh_m2 = parsed.pv_generation_kwh_m2
+                        if pv_generation_kwh_m2 > 0:
+                            console.print(f"  [green]✓ Solar PV: Actual generation = {pv_generation_kwh_m2:.1f} kWh/m²[/green]")
+
+                            # CRITICAL FIX (2025-01-06): Recalculate investment based on ACTUAL simulated capacity
+                            actual_total_kwh = pv_generation_kwh_m2 * fusion.atemp_m2
+                            PV_YIELD_KWH_PER_KWP = 950  # Stockholm typical yield
+                            actual_capacity_kwp = actual_total_kwh / PV_YIELD_KWH_PER_KWP
+                            old_investment = investment  # Store old for comparison
+
+                            # Recalculate investment using actual capacity
+                            try:
+                                cost = self.cost_calculator.calculate_ecm_cost(
+                                    ecm_id=ecm.id,
+                                    quantity=actual_capacity_kwp,
+                                    floor_area_m2=fusion.atemp_m2,
+                                )
+                                investment = cost.total_after_deductions
+
+                                # Show BRF-level solar context if applicable
+                                MIN_SIGNIFICANT_SOLAR_KWP = 5.0
+                                if fusion.brf_has_solar and fusion.brf_existing_solar_kwp >= MIN_SIGNIFICANT_SOLAR_KWP:
+                                    # Significant existing solar - show as additional
+                                    console.print(f"  [green]✓ Solar PV: {actual_capacity_kwp:.1f} kWp ADDITIONAL (BRF already has {fusion.brf_existing_solar_kwp:.1f} kWp)[/green]")
+                                    console.print(f"  [cyan]    Investment = {investment:,.0f} SEK (was {old_investment:,.0f})[/cyan]")
+                                elif fusion.brf_has_solar and fusion.brf_existing_solar_kwp > 0:
+                                    # Minimal existing solar - recommend full capacity
+                                    console.print(f"  [green]✓ Solar PV: {actual_capacity_kwp:.1f} kWp (BRF has minimal solar: {fusion.brf_existing_solar_kwp:.1f} kWp)[/green]")
+                                    console.print(f"  [cyan]    Investment = {investment:,.0f} SEK[/cyan]")
+                                else:
+                                    console.print(f"  [green]✓ Solar PV: {actual_capacity_kwp:.1f} kWp, Investment = {investment:,.0f} SEK (was {old_investment:,.0f})[/green]")
+                            except Exception as e:
+                                console.print(f"  [yellow]⚠ Solar PV cost recalculation failed: {e}[/yellow]")
+
                     result_energy, savings_by_use = calculate_ecm_savings(
                         ecm_id=ecm.id,
                         baseline=baseline_energy,
                         simulated_heating_result=ecm_heating_kwh_m2,
+                        heating_system=fusion.heating_system,  # For PV + heat pump synergy
+                        pv_generation_kwh_m2=pv_generation_kwh_m2,  # Actual PV generation if available
                     )
 
                     # Total savings across all end-uses
@@ -3811,19 +5080,30 @@ class FullPipelineAnalyzer:
                     total_savings_pct = (total_savings_kwh_m2 / baseline_energy.total_kwh_m2 * 100) if baseline_energy.total_kwh_m2 > 0 else 0
 
                     # Additional savings from non-heating end-uses
+                    # IMPORTANT: For solar_pv with heat pump, heating savings come from synergy (not E+ sim)
+                    # so we need to use savings_by_use["heating"] instead of energy_savings_sek
+                    heating_savings_kwh_from_synergy = savings_by_use.get("heating", 0) * fusion.atemp_m2
                     dhw_savings_kwh = savings_by_use.get("dhw", 0) * fusion.atemp_m2
                     prop_el_savings_kwh = savings_by_use.get("property_el", 0) * fusion.atemp_m2
+
+                    # Use synergy-based heating savings if they're higher (for solar_pv + heat pump)
+                    if heating_savings_kwh_from_synergy > annual_savings_kwh:
+                        heating_savings_sek = heating_savings_kwh_from_synergy * 0.90  # District heating price
+                    else:
+                        heating_savings_sek = energy_savings_sek
+
                     dhw_savings_sek = dhw_savings_kwh * 0.90
                     prop_el_savings_sek = prop_el_savings_kwh * 1.50
 
                     # Update total savings
-                    total_energy_savings_sek = energy_savings_sek + dhw_savings_sek + prop_el_savings_sek
+                    total_energy_savings_sek = heating_savings_sek + dhw_savings_sek + prop_el_savings_sek
                     total_annual_savings_sek = total_energy_savings_sek + effekt_savings_sek
                     payback = investment / total_annual_savings_sek if total_annual_savings_sek > 0 else 99
 
                     ecm_result = {
                         "ecm_id": ecm.id,
                         "ecm_name": ecm.name,
+                        "name_sv": getattr(ecm, 'name_sv', ecm.name),  # Swedish name for display
                         # Heating-only (scaled)
                         "heating_kwh_m2": ecm_heating_kwh_m2,
                         "savings_percent": savings_pct,
@@ -3838,7 +5118,7 @@ class FullPipelineAnalyzer:
                         "investment_sek": investment,
                         "annual_savings_sek": total_annual_savings_sek,
                         "energy_savings_sek": total_energy_savings_sek,
-                        "heating_savings_sek": energy_savings_sek,
+                        "heating_savings_sek": heating_savings_sek,  # Use synergy-based if higher
                         "dhw_savings_sek": dhw_savings_sek,
                         "prop_el_savings_sek": prop_el_savings_sek,
                         "effekt_savings_sek": effekt_savings_sek,
@@ -3916,6 +5196,7 @@ class FullPipelineAnalyzer:
         return {
             "ecm_id": ecm.id,
             "ecm_name": ecm.name,
+            "name_sv": getattr(ecm, 'name_sv', ecm.name),  # Swedish name for display
             "heating_kwh_m2": baseline_kwh_m2 * (1 - typical_savings / 100),
             "savings_percent": typical_savings,
             "investment_sek": investment,
@@ -4014,10 +5295,14 @@ class FullPipelineAnalyzer:
             # Estimate heating result (percentage reduction of heating)
             estimated_heating_result = baseline_energy.heating_kwh_m2 * (1 - adjusted_savings / 100)
 
+            # Pass heating_system for PV + heat pump synergy calculation
+            heating_system = fusion.heating_system if fusion else None
             result_energy, savings_by_use = calculate_ecm_savings(
                 ecm_id=ecm.id,
                 baseline=baseline_energy,
                 simulated_heating_result=estimated_heating_result,
+                heating_system=heating_system,
+                pv_generation_kwh_m2=None,  # No sim data available, will use fallback
             )
 
             # Total savings across all end-uses
@@ -4066,6 +5351,7 @@ class FullPipelineAnalyzer:
             results.append({
                 "ecm_id": ecm.id,
                 "ecm_name": ecm.name,
+                "name_sv": getattr(ecm, 'name_sv', ecm.name),  # Swedish name for display
                 # Heating-only (for backward compatibility)
                 "heating_kwh_m2": result_energy.heating_kwh_m2,
                 "savings_percent": adjusted_savings,  # Heating-only savings %
@@ -4133,7 +5419,8 @@ class FullPipelineAnalyzer:
                 # For heat pumps, solar, etc: estimate kW based on size
                 # ~0.04 kW/m² for heating, ~0.02 kW/m² for solar
                 if "solar" in ecm_id or "pv" in ecm_id:
-                    return fusion.pv_capacity_kwp or (footprint * 0.15)  # ~15% of roof
+                    # Use remaining capacity if existing solar is installed
+                    return fusion.remaining_pv_capacity_kwp or fusion.pv_capacity_kwp or (footprint * 0.15)
                 else:
                     return atemp * 0.04  # ~40 W/m² heating capacity
             else:
@@ -4172,8 +5459,8 @@ class FullPipelineAnalyzer:
             "led_lighting": atemp,
             "led_common_areas": atemp * 0.15,
             "led_outdoor": max(10, apartments / 5),  # ~1 fixture per 5 apts
-            # Solar
-            "solar_pv": fusion.pv_capacity_kwp or (footprint * 0.15),
+            # Solar - use remaining capacity if existing solar is installed
+            "solar_pv": fusion.remaining_pv_capacity_kwp or fusion.pv_capacity_kwp or (footprint * 0.15),
             "solar_thermal": footprint * 0.1,
             "battery_storage": atemp * 0.01,  # ~10 Wh/m²
             # Zero-cost / low-cost (per building)
@@ -5007,6 +6294,7 @@ class FullPipelineAnalyzer:
                 fusion.floors = data["levels"]
 
         elif source == "google_solar" and isinstance(data, RoofAnalysis):
+            # Single building roof analysis
             fusion.roof_analysis = data
             fusion.pv_capacity_kwp = data.optimal_capacity_kwp
             fusion.pv_annual_kwh = data.annual_generation_potential_kwh
@@ -5014,7 +6302,35 @@ class FullPipelineAnalyzer:
             if data.existing_solar:
                 fusion.existing_solar_kwp = data.existing_solar.capacity_kwp
                 fusion.existing_solar_production_kwh = data.existing_solar.annual_production_kwh
-            fusion.remaining_pv_capacity_kwp = max(0, fusion.pv_capacity_kwp - fusion.existing_solar_kwp)
+            self._apply_pv_capacity_adjustments(fusion)
+
+        elif source.startswith("google_solar_") and isinstance(data, RoofAnalysis):
+            # Multi-building property: aggregate roof analyses
+            roof_index = int(source.split("_")[-1])
+            bld_info = fusion.property_building_details[roof_index] if roof_index < len(fusion.property_building_details) else {}
+
+            # Store per-building roof analysis
+            fusion.per_building_roof_analysis.append({
+                "address": bld_info.get("address", f"Building {roof_index + 1}"),
+                "capacity_kwp": data.optimal_capacity_kwp,
+                "annual_kwh": data.annual_generation_potential_kwh,
+                "roof_area_m2": data.net_available_m2 or 0,
+                "existing_solar": data.existing_solar is not None,
+            })
+
+            # Aggregate totals
+            fusion.pv_capacity_kwp += data.optimal_capacity_kwp
+            fusion.pv_annual_kwh += data.annual_generation_potential_kwh
+            if data.existing_solar:
+                fusion.existing_solar_kwp += data.existing_solar.capacity_kwp
+                fusion.existing_solar_production_kwh += data.existing_solar.annual_production_kwh
+
+            # Update remaining capacity
+            self._apply_pv_capacity_adjustments(fusion)
+
+            # Log multi-roof progress
+            num_roofs = len(fusion.per_building_roof_analysis)
+            console.print(f"  [cyan]✓ Roof {num_roofs}: {bld_info.get('address', '?')} → {data.optimal_capacity_kwp:.1f} kWp (total: {fusion.pv_capacity_kwp:.1f} kWp)[/cyan]")
 
         elif source == "mapillary" and data:
             # Analyze images for WWR and material using AI
@@ -5026,6 +6342,30 @@ class FullPipelineAnalyzer:
                 fusion.detected_material = material
                 console.print(f"  [green]✓ WWR detected: {wwr}[/green]")
                 console.print(f"  [green]✓ Material: {material} ({confidence:.0%} confidence)[/green]")
+
+    def _apply_pv_capacity_adjustments(self, fusion: DataFusionResult):
+        """Apply adjustments to PV capacity based on BRF-level solar installations."""
+        # Calculate remaining capacity, considering BRF-level solar
+        # IMPORTANT: Only reduce capacity if BRF has SIGNIFICANT solar (> 5 kWp)
+        # Swedish multi-family buildings typically export only a few hours/year,
+        # so small existing installations shouldn't block new capacity recommendations
+        MIN_SIGNIFICANT_SOLAR_KWP = 5.0  # Below this, treat as no solar
+
+        if fusion.brf_has_solar and fusion.brf_existing_solar_kwp >= MIN_SIGNIFICANT_SOLAR_KWP:
+            # BRF has significant solar - use BRF-level remaining capacity
+            if fusion.brf_total_atemp_m2 > 0 and fusion.atemp_m2 > 0:
+                building_share = fusion.atemp_m2 / fusion.brf_total_atemp_m2
+                fusion.remaining_pv_capacity_kwp = max(0, fusion.brf_remaining_roof_kwp * building_share)
+                logger.info(f"Solar PV: BRF has significant solar ({fusion.brf_existing_solar_kwp:.1f} kWp). Remaining for this building: {fusion.remaining_pv_capacity_kwp:.1f} kWp")
+            else:
+                fusion.remaining_pv_capacity_kwp = max(0, fusion.pv_capacity_kwp - fusion.existing_solar_kwp)
+        elif fusion.brf_has_solar and fusion.brf_existing_solar_kwp > 0:
+            # BRF has minimal solar (< 5 kWp) - recommend full capacity anyway
+            fusion.remaining_pv_capacity_kwp = fusion.pv_capacity_kwp
+            logger.info(f"Solar PV: BRF has minimal solar ({fusion.brf_existing_solar_kwp:.1f} kWp < {MIN_SIGNIFICANT_SOLAR_KWP} kWp). Recommending full capacity: {fusion.remaining_pv_capacity_kwp:.1f} kWp")
+        else:
+            # No BRF-level solar - use building-level calculation
+            fusion.remaining_pv_capacity_kwp = max(0, fusion.pv_capacity_kwp - fusion.existing_solar_kwp)
 
 
 def correct_material_by_era(
