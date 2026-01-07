@@ -946,6 +946,9 @@ class FullPipelineAnalyzer:
         console.print("[bold]Phase 1: Data Fusion[/bold]")
         if building_data:
             fusion = self._parse_building_data(building_data)
+            # When building_data is provided, we still need to fetch remote sources
+            # (Google Solar, Street View) for multi-roof analysis
+            fusion = self._fetch_remote_sources(fusion, address, building_data.get("lat"), building_data.get("lon"))
         else:
             fusion = await self._fetch_all_data(address, lat, lon)
 
@@ -1828,21 +1831,9 @@ class FullPipelineAnalyzer:
                 logger.debug(f"Legacy Supabase lookup failed: {e}")
 
         # ═══════════════════════════════════════════════════════════════════════
-        # STEP 0: Use building_details from address_pipeline if available
-        # This contains multi-building property data already processed
-        # ═══════════════════════════════════════════════════════════════════════
-        if existing_data and existing_data.get("building_details"):
-            building_details = existing_data["building_details"]
-            if len(building_details) > 1:
-                console.print(f"  [cyan]Using {len(building_details)} buildings from property data[/cyan]")
-                fusion.property_building_details = building_details
-                if existing_data.get("property_designation"):
-                    fusion._property_designation = existing_data["property_designation"]
-                if existing_data.get("all_addresses"):
-                    fusion._all_addresses = existing_data["all_addresses"]
-
-        # ═══════════════════════════════════════════════════════════════════════
         # STEP 1: Sweden Buildings GeoJSON (RICHEST source - try FIRST!)
+        # NOTE: Multi-building property handling is done in _parse_building_data
+        # and _fetch_remote_sources when building_data is provided.
         # ═══════════════════════════════════════════════════════════════════════
         swedish_building = None
         if self.sweden_buildings is None:
@@ -2793,6 +2784,17 @@ class FullPipelineAnalyzer:
             if fusion.ground_source_hp_kwh > 0:
                 console.print(f"  [cyan]📥 Received ground source HP data: {fusion.ground_source_hp_kwh:,.0f} kWh → has_heat_pump=True[/cyan]")
 
+            # CRITICAL: Extract building_details for multi-roof solar analysis
+            # This is passed from address_pipeline.py property aggregation
+            building_details = data.get("building_details", [])
+            if building_details and len(building_details) > 1:
+                console.print(f"  [cyan]📥 Using {len(building_details)} buildings from property data[/cyan]")
+                fusion.property_building_details = building_details
+                if data.get("property_designation"):
+                    fusion._property_designation = data["property_designation"]
+                if data.get("all_addresses"):
+                    fusion._all_addresses = data["all_addresses"]
+
         else:
             # Original API format
             prop = data.get("property", {})
@@ -2935,6 +2937,208 @@ class FullPipelineAnalyzer:
 
         # Consolidate height/floor estimates
         fusion = self._consolidate_height_floors(fusion)
+
+        return fusion
+
+    def _fetch_remote_sources(
+        self,
+        fusion: DataFusionResult,
+        address: str,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> DataFusionResult:
+        """Fetch remote data sources for an already-parsed building.
+
+        This handles multi-building properties by:
+        1. Querying Google Solar for EACH building's roof
+        2. Fetching Street View facades for EACH building
+        3. Aggregating results (sum PV capacity, average WWR, vote on material)
+
+        Called when building_data is provided (e.g., from Sweden GeoJSON),
+        but we still need to fetch Google Solar and Street View data.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Use fusion coordinates if not provided
+        lat = lat or fusion.lat
+        lon = lon or fusion.lon
+
+        console.print("  [cyan]Fetching remote sources (Google Solar, Street View)...[/cyan]")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 1: Multi-roof Google Solar analysis
+        # ═══════════════════════════════════════════════════════════════════════
+        if self.google_api_key:
+            # Check if we have multiple buildings in property
+            if fusion.property_building_details and len(fusion.property_building_details) > 1:
+                console.print(f"  [cyan]Analyzing {len(fusion.property_building_details)} roofs in property...[/cyan]")
+
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = {}
+                    for i, bld in enumerate(fusion.property_building_details):
+                        bld_lat = bld.get("lat")
+                        bld_lon = bld.get("lon")
+                        if bld_lat and bld_lon:
+                            futures[f"google_solar_{i}"] = executor.submit(
+                                self._fetch_google_solar, bld_lat, bld_lon
+                            )
+
+                    # Collect results
+                    for source, future in futures.items():
+                        try:
+                            result = future.result(timeout=30)
+                            if result:
+                                fusion.data_sources.append(source)
+                                self._merge_data(fusion, source, result)
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch {source}: {e}")
+
+                # Log total
+                if fusion.pv_capacity_kwp > 0:
+                    console.print(
+                        f"  [green]✓ Total roof PV capacity: {fusion.pv_capacity_kwp:.1f} kWp "
+                        f"from {len(fusion.per_building_roof_analysis)} roofs[/green]"
+                    )
+            else:
+                # Single building: use primary coordinates
+                try:
+                    result = self._fetch_google_solar(lat, lon)
+                    if result:
+                        fusion.data_sources.append("google_solar")
+                        self._merge_data(fusion, "google_solar", result)
+                        console.print(f"  [green]✓ Roof PV capacity: {fusion.pv_capacity_kwp:.1f} kWp[/green]")
+                except Exception as e:
+                    logger.warning(f"Google Solar failed: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 2: Multi-building Street View facade analysis
+        # ═══════════════════════════════════════════════════════════════════════
+        if self.streetview_fetcher:
+            try:
+                # Multi-building property: analyze facades for EACH building
+                if fusion.property_building_details and len(fusion.property_building_details) > 1:
+                    console.print(f"  [cyan]Fetching facades for {len(fusion.property_building_details)} buildings...[/cyan]")
+
+                    all_wwr_values = []
+                    all_materials = []
+                    per_building_facades = []
+
+                    for i, bld in enumerate(fusion.property_building_details):
+                        bld_lat = bld.get("lat")
+                        bld_lon = bld.get("lon")
+                        bld_addr = bld.get("address", f"Building {i+1}")
+
+                        if bld_lat and bld_lon:
+                            # Create simple footprint around building centroid
+                            size = 0.0002  # ~20m
+                            bld_footprint = {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [bld_lon - size, bld_lat - size],
+                                    [bld_lon + size, bld_lat - size],
+                                    [bld_lon + size, bld_lat + size],
+                                    [bld_lon - size, bld_lat + size],
+                                    [bld_lon - size, bld_lat - size],
+                                ]]
+                            }
+
+                            try:
+                                bld_wwr, bld_material, bld_conf, bld_gf, bld_height = self._fetch_streetview_facades(
+                                    bld_footprint,
+                                    use_multi_image=True,
+                                    use_sam_crop=True,
+                                    images_per_facade=2,
+                                    use_historical=True,
+                                    historical_years=2,
+                                )
+
+                                per_building_facades.append({
+                                    "address": bld_addr,
+                                    "wwr": bld_wwr,
+                                    "material": bld_material,
+                                    "confidence": bld_conf,
+                                })
+
+                                if bld_wwr:
+                                    all_wwr_values.append(bld_wwr)
+                                if bld_material != "unknown":
+                                    all_materials.append((bld_material, bld_conf))
+
+                                console.print(f"    [cyan]✓ {bld_addr}: WWR={bld_wwr}, material={bld_material}[/cyan]")
+
+                            except Exception as bld_e:
+                                logger.warning(f"Failed to fetch facades for {bld_addr}: {bld_e}")
+
+                    # Aggregate WWR
+                    if all_wwr_values:
+                        aggregated_wwr = {}
+                        for direction in ['N', 'S', 'E', 'W']:
+                            dir_values = [w.get(direction, 0) for w in all_wwr_values if w.get(direction)]
+                            if dir_values:
+                                aggregated_wwr[direction] = sum(dir_values) / len(dir_values)
+                        if aggregated_wwr:
+                            fusion.detected_wwr = aggregated_wwr
+                            fusion.data_sources.append("google_streetview")
+                            console.print(f"  [green]✓ Aggregated WWR from {len(all_wwr_values)} buildings: {aggregated_wwr}[/green]")
+
+                    # Vote on material
+                    if all_materials:
+                        from collections import defaultdict
+                        mat_votes = defaultdict(float)
+                        for mat, conf in all_materials:
+                            mat_votes[mat] += conf
+                        material = max(mat_votes, key=mat_votes.get)
+                        fusion.detected_material = material
+                        console.print(f"  [green]✓ Material vote: {material}[/green]")
+
+                elif fusion.footprint_geojson:
+                    # Single building: standard analysis
+                    console.print("  [cyan]Fetching Google Street View facades...[/cyan]")
+                    wwr, material, confidence, ground_floor, height_est = self._fetch_streetview_facades(
+                        fusion.footprint_geojson,
+                        use_multi_image=True,
+                        use_sam_crop=True,
+                        images_per_facade=3,
+                        use_historical=True,
+                        historical_years=3,
+                    )
+
+                    if wwr:
+                        fusion.detected_wwr = wwr
+                        fusion.data_sources.append("google_streetview")
+                        console.print(f"  [green]✓ WWR: {wwr}[/green]")
+                    if material != "unknown":
+                        fusion.detected_material = material
+                        console.print(f"  [green]✓ Material: {material} ({confidence:.0%})[/green]")
+
+                    # Handle height estimation from GSV
+                    if height_est and height_est.method != "default":
+                        if not fusion.height_m or fusion.height_m <= 0:
+                            fusion.height_m = height_est.height_m
+                            fusion.height_source = f"gsv_{height_est.method}"
+                            console.print(f"  [green]✓ Height from GSV: {fusion.height_m:.1f}m[/green]")
+                        if height_est.floor_count > 0 and (not fusion.floors or fusion.floors <= 0):
+                            fusion.floors = height_est.floor_count
+                            console.print(f"  [green]✓ Floors from GSV: {fusion.floors}[/green]")
+
+            except Exception as e:
+                logger.warning(f"Street View analysis failed: {e}")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 3: Satellite imagery (Esri - free)
+        # ═══════════════════════════════════════════════════════════════════════
+        if self.satellite_fetcher and fusion.footprint_geojson:
+            try:
+                console.print("  [cyan]Fetching Esri satellite imagery...[/cyan]")
+                sat_img = self.satellite_fetcher.fetch_building_aerial(fusion.footprint_geojson)
+                if sat_img:
+                    sat_path = self.output_dir / "satellite" / "building_aerial.png"
+                    sat_path.parent.mkdir(parents=True, exist_ok=True)
+                    sat_img.image.save(sat_path)
+                    fusion.data_sources.append("esri_satellite")
+                    console.print(f"  [green]✓ Satellite: {sat_img.size[0]}x{sat_img.size[1]}[/green]")
+            except Exception as e:
+                logger.warning(f"Esri satellite failed: {e}")
 
         return fusion
 
