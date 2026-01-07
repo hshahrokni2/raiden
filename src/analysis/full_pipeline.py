@@ -1791,11 +1791,12 @@ class FullPipelineAnalyzer:
                 # Find the ECM result for this ID
                 ecm_result = next((e for e in ecm_results_list if e.id == ecm_id), None)
                 if ecm_result:
+                    # Use total_savings_percent (all end uses) not heating-only savings_percent
                     ecm_items.append(ECMPackageItem(
                         id=ecm_id,
                         name=ecm_result.name,
                         name_sv=ecm_result.name_sv,
-                        individual_savings_percent=ecm_result.savings_percent,
+                        individual_savings_percent=ecm_result.total_savings_percent,
                         estimated_cost_sek=ecm_result.estimated_cost_sek,
                     ))
 
@@ -1842,30 +1843,67 @@ class FullPipelineAnalyzer:
                 measure_str = measure.value if hasattr(measure, 'value') else str(measure)
                 existing_measures_list.append(measure_names.get(measure_str, measure_str))
 
-        # Maintenance plan data
+        # Maintenance plan data - build realistic projections from packages
         maintenance_plan_data = None
-        if cash_flow or packages:
+        if packages:
+            # Calculate annual fund contribution (estimate from Atemp if not available)
+            annual_contribution = int(atemp_m2 * 15)  # ~15 SEK/m²/year typical BRF contribution
+
+            # Build year-by-year projections
+            projections = []
+            current_year = datetime.now().year
+            fund_balance = 0
+            cumulative_savings = 0
+
+            # Map packages to recommended years
+            pkg_by_year = {}
+            for pkg in packages:
+                year = pkg.fund_recommended_year or (current_year + pkg.package_number)
+                if year not in pkg_by_year:
+                    pkg_by_year[year] = []
+                pkg_by_year[year].append(pkg)
+
+            for year_offset in range(10):  # 10 year projection
+                year = current_year + year_offset
+                fund_start = fund_balance
+
+                # Investment this year
+                investment = 0
+                ecms_this_year = []
+                if year in pkg_by_year:
+                    for pkg in pkg_by_year[year]:
+                        investment += pkg.total_investment_sek
+                        ecms_this_year.extend(pkg.ecm_ids)
+                        cumulative_savings += pkg.annual_savings_sek
+
+                # Calculate fund end
+                fund_end = fund_start + annual_contribution - investment + cumulative_savings
+                fund_balance = max(0, fund_end)
+
+                projections.append({
+                    "year": year,
+                    "fund_start_sek": fund_start,
+                    "fund_contribution_sek": annual_contribution,
+                    "investment_sek": investment,
+                    "energy_savings_sek": cumulative_savings,
+                    "fund_end_sek": fund_end,
+                    "loan_balance_sek": 0,
+                    "ecms_implemented": ecms_this_year,
+                })
+
+            # Calculate total values
+            total_investment = sum(p.total_investment_sek for p in packages)
+            total_annual_savings = sum(p.annual_savings_sek for p in packages)
+
             maintenance_plan_data = MaintenancePlanData(
-                net_present_value_sek=cash_flow.get("npv_sek", 0) if cash_flow else 0,
-                break_even_year=cash_flow.get("break_even_year", 0) if cash_flow else 0,
-                final_fund_balance_sek=cash_flow.get("final_fund_balance_sek", 0) if cash_flow else 0,
-                total_investment_sek=sum(p.total_investment_sek for p in packages) if packages else 0,
-                total_savings_30yr_sek=sum(p.annual_savings_sek * 30 for p in packages) if packages else 0,
+                net_present_value_sek=cash_flow.get("npv_sek", 0) if cash_flow else (total_annual_savings * 20 - total_investment),
+                break_even_year=cash_flow.get("break_even_year", 0) if cash_flow else (current_year + int(total_investment / total_annual_savings) if total_annual_savings > 0 else 0),
+                final_fund_balance_sek=cash_flow.get("final_fund_balance_sek", 0) if cash_flow else projections[-1]["fund_end_sek"],
+                total_investment_sek=total_investment,
+                total_savings_30yr_sek=total_annual_savings * 30,
                 zero_cost_annual_savings=packages[0].annual_savings_sek if packages else 0,
                 max_loan_used_sek=0,
-                projections=[
-                    {
-                        "year": p.get("year", 2025 + i),
-                        "fund_start_sek": 0,
-                        "fund_contribution_sek": 200000,
-                        "investment_sek": 0,
-                        "energy_savings_sek": p.get("savings", 0),
-                        "fund_end_sek": p.get("fund_end", 0),
-                        "loan_balance_sek": 0,
-                        "ecms_implemented": [],
-                    }
-                    for i, p in enumerate(cash_flow.get("projections", []) if cash_flow else [])
-                ],
+                projections=projections,
             )
 
         # Clarification questions
