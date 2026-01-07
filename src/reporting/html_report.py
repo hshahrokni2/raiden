@@ -1058,6 +1058,32 @@ class HTMLReportGenerator:
                 if after_class:
                     prev_class = after_class
 
+                # Identify ECMs needing verification (high uncertainty for modern buildings)
+                verification_notes = []
+                ecm_ids = [e.id if hasattr(e, 'id') else '' for e in pkg.ecms]
+
+                # Check for ECMs with building-specific uncertainty
+                if 'energy_monitoring' in ecm_ids:
+                    verification_notes.append("Energiövervakning sparar ej energi direkt - är möjliggörare")
+                if 'low_flow_fixtures' in ecm_ids and data.construction_year and data.construction_year >= 2006:
+                    verification_notes.append("Snålspolande: BBR-krav sedan 2006, kontrollera befintligt")
+                if 'radiator_balancing' in ecm_ids:
+                    verification_notes.append("Radiatorer: verifiera att byggnaden har vattenburet system")
+                if 'dhw_tank_insulation' in ecm_ids and data.construction_year and data.construction_year >= 2005:
+                    verification_notes.append("Ackumulator: moderna tankar ofta redan isolerade")
+                if 'bms_optimization' in ecm_ids and data.existing_measures and 'ftx_system' in [m.value if hasattr(m, 'value') else m for m in data.existing_measures]:
+                    verification_notes.append("BMS: redan FTX 80% - begränsad uppsida")
+
+                verification_html = ''
+                if verification_notes:
+                    notes_list = ''.join([f'<li style="font-size: 0.8rem; color: #92400e;">{n}</li>' for n in verification_notes[:3]])
+                    verification_html = f'''
+                    <div style="background: #fef3c7; border-left: 3px solid #f59e0b; padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px;">
+                        <strong style="font-size: 0.85rem; color: #92400e;">⚠️ Kräver verifiering:</strong>
+                        <ul style="margin: 0.25rem 0 0 1rem; padding: 0;">{notes_list}</ul>
+                    </div>
+                    '''
+
                 cards_html += f'''
                 <div class="package-card {card_class}">
                     <div class="package-header">
@@ -1069,6 +1095,7 @@ class HTMLReportGenerator:
                         <ul>
                             {ecm_list}
                         </ul>
+                        {verification_html}
                     </div>
                     <div class="package-footer">
                         {energy_progression_row}
@@ -1087,6 +1114,21 @@ class HTMLReportGenerator:
 
             explanation = "Paket simuleras med EnergyPlus för faktiska samverkanseffekter." if is_simulated else \
                          "Kombinerade besparingar uppskattas med 70% samverkanseffekt."
+
+            # Add uncertainty methodology note
+            uncertainty_note = '''
+            <div style="background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border: 1px solid #0284c7; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                <h4 style="margin: 0 0 0.5rem 0; color: #0369a1; font-size: 0.95rem;">📋 Osäkerhetshantering</h4>
+                <p style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: #0c4a6e;">
+                    <strong>Besparingsuppskattningar baseras på:</strong> Arketype-matchning, EnergyPlus-simulering och svenska erfarenhetsvärden.
+                    Verklig besparing beror på: (1) byggnadens faktiska skick, (2) befintliga åtgärder, (3) brukarbeteende.
+                </p>
+                <p style="margin: 0; font-size: 0.85rem; color: #0c4a6e;">
+                    <strong>Rekommendation:</strong> Utför platsbesök för att verifiera förutsättningar innan beslut.
+                    Åtgärder markerade med ⚠️ har högre osäkerhet för moderna byggnader (post-2005).
+                </p>
+            </div>
+            ''' if data.construction_year and data.construction_year >= 2005 else ''
 
             # Build energy progression timeline
             timeline_html = self._format_energy_progression_timeline(capital_packages, data)
@@ -1135,6 +1177,7 @@ class HTMLReportGenerator:
                 <p style="margin-bottom: 1rem; color: var(--gray-700);">
                     {explanation} Välj paket baserat på budget och ambitionsnivå.
                 </p>
+                {uncertainty_note}
                 {timeline_html}
                 <div class="package-cards">
                     {cards_html}
