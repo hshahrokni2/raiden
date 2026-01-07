@@ -121,6 +121,23 @@ from ..planning.sequencer import ECMSequencer, ECMCandidate, SequencingStrategy
 from ..planning.effektvakt import analyze_effektvakt_potential, PeakShavingResult
 from ..planning.models import MaintenancePlan, BRFFinancials
 
+# Raiden imports - Reporting
+from ..reporting.html_report import (
+    HTMLReportGenerator,
+    ReportData,
+    ECMResult as ReportECMResult,
+    MaintenancePlanData,
+    EffektvaktData,
+    ClarificationSetData,
+    ClarificationQuestionData,
+    CalibrationAnomaliesData,
+)
+from ..analysis.package_generator import (
+    ECMPackage,
+    ECMPackageItem,
+    get_energy_price,
+)
+
 # Raiden imports - QC Agents
 from ..orchestrator.qc_agent import ImageQCAgent, ECMRefinerAgent, AnomalyAgent, QCTrigger
 
@@ -1616,7 +1633,343 @@ class FullPipelineAnalyzer:
                 console.print(f"  [yellow]• {medium_count} medium priority[/yellow]")
             console.print(f"  [dim]Answer questions in the report to improve accuracy.[/dim]")
 
+        # ═══════════════════════════════════════════════════════════════════════
+        # Generate HTML Report (INTEGRATED - consistent report for every analysis)
+        # ═══════════════════════════════════════════════════════════════════════
+        try:
+            console.print("\n[bold]Generating HTML report...[/bold]")
+            report_path = self.generate_report(result)
+            result["report_path"] = str(report_path)
+            console.print(f"  [green]✓ Report: {report_path}[/green]")
+        except Exception as e:
+            logger.warning(f"Report generation failed: {e}")
+            console.print(f"  [yellow]Report generation failed: {e}[/yellow]")
+
         return result
+
+    def generate_report(self, result: dict) -> Path:
+        """
+        Generate HTML report from analysis result.
+
+        This is the SINGLE source of truth for report generation.
+        Called automatically at end of analyze(), but can also be
+        called separately to regenerate a report.
+
+        Args:
+            result: The result dict from analyze()
+
+        Returns:
+            Path to generated HTML report
+        """
+        report_data = self._result_to_report_data(result)
+
+        # Generate filename from address
+        fusion = result.get("data_fusion")
+        address_safe = fusion.address.replace(" ", "_").replace(",", "").replace("å", "a").replace("ä", "a").replace("ö", "o") if fusion else "report"
+        report_path = self.output_dir / f"report_{address_safe}.html"
+
+        generator = HTMLReportGenerator()
+        generator.generate(report_data, report_path)
+
+        return report_path
+
+    def _result_to_report_data(self, result: dict) -> ReportData:
+        """
+        Convert full pipeline result dict to ReportData for HTML generation.
+
+        Maps:
+        - data_fusion → building info
+        - context → existing measures
+        - ecm_results → ECMResult list
+        - snowball_packages → ECMPackage list
+        - calibration → calibration quality metrics
+        - cash_flow → maintenance plan
+        - clarification_set → clarification questions
+        """
+        fusion: DataFusionResult = result.get("data_fusion")
+        context: EnhancedBuildingContext = result.get("context")
+        baseline_energy = result.get("baseline_energy") or {}
+        calibration = result.get("calibration") or {}
+        cash_flow = result.get("cash_flow") or {}
+        packages = result.get("snowball_packages") or []
+        clarification_set = result.get("clarification_set")
+        calibration_analysis = result.get("calibration_analysis")
+
+        # Get energy price for calculations
+        energy_price = get_energy_price(region="stockholm", heating_type="district_heating")
+        baseline_kwh_m2 = result.get("baseline_kwh_m2", 0)
+        atemp_m2 = fusion.atemp_m2 or 1000
+
+        # Convert ECM results to ReportECMResult format
+        ecm_results_list = []
+        for ecm in result.get("ecm_results", []):
+            # ECM name translations
+            ecm_names_sv = {
+                'wall_external_insulation': 'Tilläggsisolering utsida',
+                'wall_internal_insulation': 'Tilläggsisolering insida',
+                'roof_insulation': 'Tilläggsisolering tak',
+                'air_sealing': 'Tätning',
+                'demand_controlled_ventilation': 'Behovsstyrd ventilation (DCV)',
+                'smart_thermostats': 'Smarta termostater',
+                'led_lighting': 'LED-belysning',
+                'solar_pv': 'Solceller',
+                'solar_thermal': 'Solfångare',
+                'heat_pump_water_heater': 'VVB-värmepump',
+                'ftx_overhaul': 'FTX-renovering',
+                'radiator_balancing': 'Injustering av radiatorer',
+                'night_setback': 'Nattsänkning',
+                'basement_insulation': 'Källarisolering',
+                'thermal_bridge_remediation': 'Köldbryggsåtgärd',
+                'facade_renovation': 'Total fasadrenovering',
+                'entrance_door_replacement': 'Dörrbytte',
+                'effektvakt_optimization': 'Effektvaktsoptimering',
+                'bms_optimization': 'Styr- och reglertrimning',
+                'low_flow_fixtures': 'Snålspolande armaturer',
+                'hot_water_temperature': 'Sänkt varmvattentemperatur',
+                'dhw_circulation_optimization': 'VVC-optimering',
+                'dhw_tank_insulation': 'Ackumulatorisolering',
+                'pipe_insulation': 'Rörisolering',
+                'building_automation_system': 'Fastighetsautomation',
+                'led_common_areas': 'LED allmänna utrymmen',
+                'led_outdoor': 'LED utomhusbelysning',
+                'occupancy_sensors': 'Närvarosensorer',
+                'daylight_sensors': 'Dagsljussensorer',
+                'radiator_fans': 'Radiatorfläktar',
+                'heat_recovery_dhw': 'Spillvattenvärmeåtervinning',
+                'predictive_control': 'Prediktiv styrning',
+                'fault_detection': 'Feldetektering',
+                'energy_monitoring': 'Energiövervakningssystem',
+                'recommissioning': 'Driftoptimering',
+                'pump_optimization': 'Pumpoptimering',
+                'ventilation_schedule_optimization': 'Ventilationsschemaoptimering',
+                'summer_bypass': 'Sommaravstängning',
+                'battery_storage': 'Batterilagring',
+                'vrf_system': 'VRF-system',
+                'individual_metering': 'Individuell mätning',
+            }
+
+            ecm_id = ecm.get("ecm_id", "")
+            ecm_name = ecm.get("ecm_name", ecm_id)
+            heating_kwh_m2 = ecm.get("heating_kwh_m2", baseline_kwh_m2)
+            savings_kwh_m2 = baseline_kwh_m2 - heating_kwh_m2
+            savings_pct = ecm.get("savings_percent", 0)
+
+            ecm_results_list.append(ReportECMResult(
+                id=ecm_id,
+                name=ecm_name,
+                name_sv=ecm_names_sv.get(ecm_id, ecm_name),
+                category=ecm.get("category", "unknown"),
+                baseline_kwh_m2=baseline_kwh_m2,
+                result_kwh_m2=heating_kwh_m2,
+                savings_kwh_m2=savings_kwh_m2,
+                savings_percent=savings_pct,
+                estimated_cost_sek=ecm.get("investment_sek", 0),
+                simple_payback_years=ecm.get("simple_payback_years", 999),
+                total_kwh_m2=ecm.get("total_kwh_m2", heating_kwh_m2),
+                total_savings_percent=ecm.get("total_savings_percent", savings_pct),
+                heating_kwh_m2=heating_kwh_m2,
+                dhw_kwh_m2=ecm.get("dhw_kwh_m2", 0),
+                property_el_kwh_m2=ecm.get("property_el_kwh_m2", 0),
+                savings_by_end_use=ecm.get("savings_by_end_use"),
+            ))
+
+        # Sort ECM results by savings (highest first)
+        ecm_results_list.sort(key=lambda x: x.total_savings_percent, reverse=True)
+
+        # Convert SnowballPackage to ECMPackage format
+        package_names_sv = {
+            1: "Steg 1: Snabba Vinster",
+            2: "Steg 2: Byggnadsförbättringar",
+            3: "Steg 3: Stora Investeringar",
+        }
+
+        ecm_packages = []
+        for pkg in packages:
+            # Get Swedish names for ECMs in this package
+            ecm_items = []
+            for ecm_id in pkg.ecm_ids:
+                # Find the ECM result for this ID
+                ecm_result = next((e for e in ecm_results_list if e.id == ecm_id), None)
+                if ecm_result:
+                    ecm_items.append(ECMPackageItem(
+                        id=ecm_id,
+                        name=ecm_result.name,
+                        name_sv=ecm_result.name_sv,
+                        individual_savings_percent=ecm_result.savings_percent,
+                        estimated_cost_sek=ecm_result.estimated_cost_sek,
+                    ))
+
+            ecm_packages.append(ECMPackage(
+                id=f"package_{pkg.package_number}",
+                name=package_names_sv.get(pkg.package_number, pkg.package_name),
+                description=pkg.package_name,
+                ecms=ecm_items,
+                combined_savings_percent=pkg.savings_percent,
+                combined_savings_kwh_m2=baseline_kwh_m2 - pkg.combined_kwh_m2,
+                total_cost_sek=pkg.total_investment_sek,
+                simple_payback_years=pkg.simple_payback_years,
+                annual_cost_savings_sek=pkg.annual_savings_sek,
+                co2_reduction_kg_m2=0,  # Could calculate from energy mix
+                before_primary_kwh_m2=pkg.before_primary_kwh_m2,
+                after_primary_kwh_m2=pkg.after_primary_kwh_m2,
+                primary_savings_percent=pkg.primary_savings_percent,
+                before_energy_class=pkg.before_energy_class,
+                after_energy_class=pkg.after_energy_class,
+                classes_improved=pkg.classes_improved,
+                before_total_kwh_m2=pkg.before_total_kwh_m2,
+                after_total_kwh_m2=pkg.after_total_kwh_m2,
+                cumulative_savings_percent=pkg.cumulative_savings_percent,
+                fund_recommended_year=pkg.fund_recommended_year,
+                fund_available_sek=pkg.fund_available_sek,
+                years_to_afford=pkg.years_to_afford,
+            ))
+
+        # Existing measures from context
+        existing_measures_list = []
+        if context and context.existing_measures:
+            measure_names = {
+                'ftx_system': 'FTX-ventilation',
+                'heat_pump_ground': 'Bergvärmepump',
+                'heat_pump_exhaust': 'Frånluftsvärmepump',
+                'heat_pump_air': 'Luftvärmepump',
+                'solar_pv': 'Solceller',
+                'solar_thermal': 'Solfångare',
+                'led_lighting': 'LED-belysning',
+                'smart_thermostats': 'Smarta termostater',
+                'f_system': 'Frånluftsventilation',
+            }
+            for measure in context.existing_measures:
+                measure_str = measure.value if hasattr(measure, 'value') else str(measure)
+                existing_measures_list.append(measure_names.get(measure_str, measure_str))
+
+        # Maintenance plan data
+        maintenance_plan_data = None
+        if cash_flow or packages:
+            maintenance_plan_data = MaintenancePlanData(
+                net_present_value_sek=cash_flow.get("npv_sek", 0) if cash_flow else 0,
+                break_even_year=cash_flow.get("break_even_year", 0) if cash_flow else 0,
+                final_fund_balance_sek=cash_flow.get("final_fund_balance_sek", 0) if cash_flow else 0,
+                total_investment_sek=sum(p.total_investment_sek for p in packages) if packages else 0,
+                total_savings_30yr_sek=sum(p.annual_savings_sek * 30 for p in packages) if packages else 0,
+                zero_cost_annual_savings=packages[0].annual_savings_sek if packages else 0,
+                max_loan_used_sek=0,
+                projections=[
+                    {
+                        "year": p.get("year", 2025 + i),
+                        "fund_start_sek": 0,
+                        "fund_contribution_sek": 200000,
+                        "investment_sek": 0,
+                        "energy_savings_sek": p.get("savings", 0),
+                        "fund_end_sek": p.get("fund_end", 0),
+                        "loan_balance_sek": 0,
+                        "ecms_implemented": [],
+                    }
+                    for i, p in enumerate(cash_flow.get("projections", []) if cash_flow else [])
+                ],
+            )
+
+        # Clarification questions
+        clarification_data = None
+        if clarification_set and hasattr(clarification_set, 'questions'):
+            questions = []
+            for q in clarification_set.questions:
+                # Handle both old (question_id) and new (id) field names
+                q_id = getattr(q, 'id', None) or getattr(q, 'question_id', 'unknown')
+                q_options = getattr(q, 'options', [])
+                # Convert QuestionOption objects to dicts if needed
+                if q_options and hasattr(q_options[0], 'value'):
+                    q_options = [{"value": o.value, "label": o.label_sv} for o in q_options]
+                # Get question type and category
+                q_type = getattr(q, 'question_type', None)
+                q_type_str = q_type.value if hasattr(q_type, 'value') else str(q_type) if q_type else "text"
+                q_cat = getattr(q, 'category', None)
+                q_cat_str = q_cat.value if hasattr(q_cat, 'value') else str(q_cat) if q_cat else "building_data"
+                questions.append(ClarificationQuestionData(
+                    id=q_id,
+                    question_sv=getattr(q, 'question_sv', ''),
+                    question_type=q_type_str,
+                    priority=q.priority.value if hasattr(q.priority, 'value') else str(q.priority),
+                    category=q_cat_str,
+                    options=q_options,
+                    default_value=getattr(q, 'default_value', None),
+                    min_value=getattr(q, 'min_value', None),
+                    max_value=getattr(q, 'max_value', None),
+                    unit=getattr(q, 'unit', ''),
+                    impact_description_sv=getattr(q, 'impact_description_sv', ''),
+                    confidence_current=getattr(q, 'confidence_current', 0.5),
+                    confidence_if_answered=getattr(q, 'confidence_if_answered', 0.9),
+                    affected_components=getattr(q, 'affected_components', []),
+                ))
+            clarification_data = ClarificationSetData(
+                analysis_id=getattr(clarification_set, 'analysis_id', ''),
+                has_questions=len(questions) > 0,
+                questions=questions,
+                high_priority_count=getattr(clarification_set, 'high_priority_count', 0),
+                medium_priority_count=getattr(clarification_set, 'medium_priority_count', 0),
+                low_priority_count=getattr(clarification_set, 'low_priority_count', 0),
+                total_confidence_gain=getattr(clarification_set, 'total_confidence_gain', 0.0),
+            )
+
+        # Build final ReportData
+        return ReportData(
+            # Building info
+            building_name=fusion.address if fusion else "Unknown",
+            address=fusion.address if fusion else "",
+            construction_year=fusion.construction_year or 0,
+            building_type="Flerbostadshus",
+            facade_material=fusion.detected_material or "unknown",
+            atemp_m2=atemp_m2,
+            floors=fusion.floors or 4,
+            energy_class=fusion.energy_class or "Unknown",
+            declared_heating_kwh_m2=fusion.declared_kwh_m2 or 0,
+
+            # Analysis results
+            baseline_heating_kwh_m2=baseline_kwh_m2,
+            existing_measures=existing_measures_list,
+            applicable_ecms=[e.id for e in ecm_results_list],
+            excluded_ecms=[],  # Could populate from filter results
+            ecm_results=ecm_results_list,
+
+            # Multi-end-use breakdown
+            baseline_dhw_kwh_m2=baseline_energy.get("dhw_kwh_m2", 0) if isinstance(baseline_energy, dict) else 0,
+            baseline_property_el_kwh_m2=baseline_energy.get("property_el_kwh_m2", 0) if isinstance(baseline_energy, dict) else 0,
+            baseline_total_kwh_m2=baseline_energy.get("total_kwh_m2", baseline_kwh_m2) if isinstance(baseline_energy, dict) else baseline_kwh_m2,
+
+            # Solar
+            existing_pv_m2=(fusion.existing_solar_kwp or 0) * 5,  # ~5 m²/kWp
+            remaining_pv_m2=(fusion.remaining_pv_capacity_kwp or 0) * 5,
+            additional_pv_kwp=fusion.remaining_pv_capacity_kwp or 0,
+
+            # Packages
+            packages=ecm_packages,
+
+            # Maintenance plan
+            maintenance_plan=maintenance_plan_data,
+
+            # BRF info
+            num_apartments=fusion.num_apartments or 0,
+            annual_energy_cost_sek=baseline_kwh_m2 * atemp_m2 * energy_price,
+
+            # Metadata
+            analysis_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            analysis_duration_seconds=result.get("total_time_seconds", 0),
+
+            # Calibration quality
+            calibration_method=calibration.get("method", "simple"),
+            calibrated_kwh_m2=calibration.get("calibrated_kwh_m2", baseline_kwh_m2),
+            calibration_std=calibration.get("kwh_m2_std", 0),
+            ashrae_nmbe=calibration.get("ashrae_nmbe", 0),
+            ashrae_cvrmse=calibration.get("ashrae_cvrmse", 0),
+            ashrae_passes=calibration.get("ashrae_passes", False),
+            surrogate_r2=calibration.get("surrogate_r2", 0),
+            surrogate_test_r2=calibration.get("surrogate_test_r2", 0),
+            surrogate_is_overfit=calibration.get("surrogate_is_overfit", False),
+            morris_ranking=calibration.get("morris_ranking"),
+            calibrated_params=calibration.get("calibrated_param_list"),
+
+            # Clarification questions
+            clarification_questions=clarification_data,
+        )
 
     async def _fetch_all_data(
         self,
