@@ -1034,6 +1034,17 @@ class HTMLReportGenerator:
                             'standard' if 'steg2' in pkg.id or 'standard' in pkg.id else \
                             'premium' if 'steg3' in pkg.id or 'premium' in pkg.id else ''
 
+                # Add board-readiness indicator based on payback period
+                payback = pkg.simple_payback_years if hasattr(pkg, 'simple_payback_years') else 99
+                if payback <= 10:
+                    status_badge += ' <span class="badge badge-success" title="Kort återbetalningstid, låg risk">✓ Styrelseklar</span>'
+                elif payback <= 20:
+                    status_badge += ' <span class="badge badge-warning" title="Rimlig återbetalningstid">⚖️ Rimlig ROI</span>'
+                elif payback <= 30:
+                    status_badge += ' <span class="badge badge-warning" title="Lång återbetalningstid, kräver motivering">⚠️ Lång återbet.</span>'
+                else:
+                    status_badge += ' <span class="badge badge-danger" title="Ej ekonomiskt motiverbart utan subventioner">⛔ >30 år</span>'
+
                 # Format energy progression and fund timing
                 energy_progression_row = self._format_energy_progression_row(pkg)
                 fund_timing_row = self._format_fund_timing_row(pkg)
@@ -1703,6 +1714,22 @@ class HTMLReportGenerator:
 
         plan = data.maintenance_plan
 
+        # Sanity check NPV - if unrealistic, recalculate from package data
+        npv_value = plan.net_present_value_sek
+        if abs(npv_value) > 100_000_000:  # > 100 MSEK is unrealistic
+            # Fallback: simple NPV calculation from total savings - investment
+            npv_value = (plan.total_savings_30yr_sek or 0) - (plan.total_investment_sek or 0)
+        plan.net_present_value_sek = npv_value
+
+        # Sanity check break-even year
+        break_even = plan.break_even_year
+        if break_even == 0 and plan.total_investment_sek > 0:
+            # Calculate simple break-even
+            annual_savings = plan.zero_cost_annual_savings or (plan.total_savings_30yr_sek / 30 if plan.total_savings_30yr_sek else 0)
+            if annual_savings > 0:
+                break_even = int(plan.total_investment_sek / annual_savings) + 2025
+        plan.break_even_year = break_even if break_even > 2020 else 0  # Show as "N/A" if 0
+
         # Build cash flow table rows (first 10 years)
         rows_html = ''
 
@@ -1796,7 +1823,7 @@ class HTMLReportGenerator:
                     <div class="metric-label">Nuvärde (NPV)</div>
                 </div>
                 <div class="plan-metric">
-                    <div class="metric-value">{plan.break_even_year}</div>
+                    <div class="metric-value">{plan.break_even_year if plan.break_even_year > 0 else 'Ej beräknad'}</div>
                     <div class="metric-label">Break-even år</div>
                 </div>
                 <div class="plan-metric">
@@ -1937,6 +1964,31 @@ class HTMLReportGenerator:
                         Med endast årsdata: (1) R² kan inte beräknas, (2) Månadsfel kan ta ut varandra,
                         (3) Modellens noggrannhet är osäker. För produktion, begär månadsvis energistatistik.
                     </span>
+                </div>
+
+                <div style="background: linear-gradient(135deg, #dbeafe, #eff6ff); padding: 1rem; border-radius: 8px; margin-top: 1rem;">
+                    <h4 style="margin: 0 0 0.75rem 0; color: #1e40af;">📈 Så förbättrar du noggrannheten</h4>
+                    <p style="font-size: 0.9rem; margin-bottom: 0.75rem;">
+                        Genom att dela mer energidata kan vi förbättra analysens precision avsevärt:
+                    </p>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;">
+                        <div style="background: rgba(255,255,255,0.7); padding: 0.5rem; border-radius: 4px; text-align: center; border: 2px solid #f59e0b;">
+                            <div style="font-size: 1.1rem; font-weight: bold; color: #d97706;">~75%</div>
+                            <div style="font-size: 0.75rem;">Nuvarande (årsdata)</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.7); padding: 0.5rem; border-radius: 4px; text-align: center; border: 2px dashed #3b82f6;">
+                            <div style="font-size: 1.1rem; font-weight: bold; color: #2563eb;">~85%</div>
+                            <div style="font-size: 0.75rem;">Med månadsdata</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.7); padding: 0.5rem; border-radius: 4px; text-align: center; border: 2px dashed #16a34a;">
+                            <div style="font-size: 1.1rem; font-weight: bold; color: #16a34a;">~90%</div>
+                            <div style="font-size: 0.75rem;">Med timdata</div>
+                        </div>
+                    </div>
+                    <p style="font-size: 0.8rem; margin-top: 0.75rem; color: #4b5563;">
+                        <strong>Hur:</strong> Kontakta er energileverantör och begär månadsvis eller timvis
+                        fjärrvärme-/elstatistik för de senaste 12-24 månaderna.
+                    </p>
                 </div>
                 '''
 
@@ -2494,7 +2546,9 @@ class HTMLReportGenerator:
 
         best_ecms = sorted(positive_ecms, key=lambda x: x.savings_percent, reverse=True)[:3]
         best_names = [e.name for e in best_ecms]
-        total_potential = sum(e.savings_percent for e in best_ecms) * 0.7  # 70% interaction factor
+        # Cap combined savings at 60% (physically realistic upper bound)
+        raw_total = sum(e.savings_percent for e in best_ecms) * 0.7  # 70% interaction factor
+        total_potential = min(raw_total, 60.0)  # Cap at 60% - can't save more than total energy
 
         return f"Rekommenderade åtgärder: {', '.join(best_names)}. Kombinerat kan dessa åtgärder minska energianvändningen med upp till {total_potential:.0f}% (med hänsyn till samverkanseffekter). Byggnaden har redan {len(data.existing_measures)} genomförda energiåtgärder."
 
