@@ -983,7 +983,12 @@ class FullPipelineAnalyzer:
         console.print(f"  ✓ Sources: {', '.join(fusion.data_sources)}")
 
         # Generate clarification questions for data fusion uncertainties
+        # Skip questions for data we already have from high-confidence sources
         if clarification_agent:
+            # Sweden GeoJSON has 85%+ confidence for all fields - skip questions
+            has_sweden_geojson = 'sweden_geojson' in fusion.data_sources
+            base_confidence = fusion.confidence if has_sweden_geojson else 0.5
+
             # Check if energy data is missing
             if not fusion.declared_kwh_m2 or fusion.declared_kwh_m2 <= 0:
                 clarification_agent.check_energy_data_missing(
@@ -991,24 +996,25 @@ class FullPipelineAnalyzer:
                     estimated_kwh_m2=fusion.estimated_kwh_m2 if hasattr(fusion, 'estimated_kwh_m2') else None
                 )
 
-            # Check construction year confidence
-            year_confidence = getattr(fusion, 'year_confidence', 0.5)
+            # Check construction year confidence - skip if from Sweden GeoJSON
+            year_confidence = base_confidence if has_sweden_geojson and fusion.construction_year else getattr(fusion, 'year_confidence', 0.5)
             if year_confidence < 0.7:
                 clarification_agent.check_construction_year_uncertain(
                     estimated_year=fusion.construction_year,
                     confidence=year_confidence
                 )
 
-            # Check WWR detection confidence
+            # Check WWR detection confidence - only ask if we don't have it
             wwr_confidence = getattr(fusion, 'wwr_confidence', 0.5)
-            if wwr_confidence < 0.6:
+            has_wwr = fusion.detected_wwr and any(v > 0 for v in fusion.detected_wwr.values()) if isinstance(fusion.detected_wwr, dict) else False
+            if wwr_confidence < 0.6 and not has_wwr:
                 clarification_agent.check_wwr_detection_low_confidence(
                     detected_wwr=fusion.detected_wwr.get('average', 0.2) if isinstance(fusion.detected_wwr, dict) else 0.2,
                     confidence=wwr_confidence
                 )
 
-            # Check Atemp confidence
-            atemp_confidence = getattr(fusion, 'atemp_confidence', 0.5)
+            # Check Atemp confidence - skip if from Sweden GeoJSON
+            atemp_confidence = base_confidence if has_sweden_geojson and fusion.atemp_m2 else getattr(fusion, 'atemp_confidence', 0.5)
             if atemp_confidence < 0.7:
                 clarification_agent.check_atemp_uncertain(
                     estimated_atemp=fusion.atemp_m2,
@@ -1035,19 +1041,24 @@ class FullPipelineAnalyzer:
         console.print(f"  ✓ Existing measures: {[m.value for m in context.existing_measures]}")
 
         # Generate clarification questions for building context uncertainties
+        # Skip questions for data we already have from high-confidence sources
         if clarification_agent:
-            # Check heating system confidence
-            heating_confidence = getattr(fusion, 'heating_confidence', 0.5)
+            # Sweden GeoJSON has 85%+ confidence for heating/ventilation/solar
+            has_sweden_geojson = 'sweden_geojson' in fusion.data_sources
+            base_confidence = fusion.confidence if has_sweden_geojson else 0.5
+
+            # Check heating system confidence - skip if from Sweden GeoJSON
             detected_heating = getattr(fusion, 'heating_system', 'unknown')
+            heating_confidence = base_confidence if (has_sweden_geojson and detected_heating and detected_heating != 'unknown') else getattr(fusion, 'heating_confidence', 0.5)
             if heating_confidence < 0.7:
                 clarification_agent.check_heating_system_uncertain(
                     detected_system=detected_heating,
                     confidence=heating_confidence
                 )
 
-            # Check ventilation system confidence
-            ventilation_confidence = getattr(fusion, 'ventilation_confidence', 0.5)
-            detected_ventilation = getattr(fusion, 'ventilation_type', 'unknown')
+            # Check ventilation system confidence - skip if from Sweden GeoJSON
+            detected_ventilation = getattr(fusion, 'ventilation_system', 'unknown')
+            ventilation_confidence = base_confidence if (has_sweden_geojson and detected_ventilation and detected_ventilation != 'unknown') else getattr(fusion, 'ventilation_confidence', 0.5)
             if ventilation_confidence < 0.7:
                 clarification_agent.check_ventilation_system_uncertain(
                     detected_system=detected_ventilation,
@@ -1055,17 +1066,18 @@ class FullPipelineAnalyzer:
                 )
 
             # Check for renovation indicators (old building with good energy class)
-            if hasattr(context, 'renovation_detected') and context.renovation_detected:
+            # Only ask if NOT from Sweden GeoJSON (they already have accurate energy class)
+            if not has_sweden_geojson and hasattr(context, 'renovation_detected') and context.renovation_detected:
                 clarification_agent.check_renovation_history(
                     renovation_detected=True,
                     indicators=getattr(context, 'renovation_indicators', [])
                 )
 
-            # Check solar detection confidence
-            solar_confidence = getattr(fusion, 'solar_confidence', 0.5)
-            if solar_confidence < 0.7:
+            # Check solar detection confidence - skip if from Sweden GeoJSON
+            solar_confidence = base_confidence if (has_sweden_geojson and fusion.existing_solar_kwp is not None) else getattr(fusion, 'solar_confidence', 0.5)
+            if solar_confidence < 0.7 and fusion.existing_solar_kwp is None:
                 clarification_agent.check_existing_solar(
-                    detected=fusion.existing_solar_kwp > 0,
+                    detected=fusion.existing_solar_kwp > 0 if fusion.existing_solar_kwp else False,
                     confidence=solar_confidence
                 )
 
